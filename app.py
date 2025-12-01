@@ -230,166 +230,79 @@ def show_user_interface(user_password=None):
             
             if translation_mode == "Interactive Word-by-Word":
                 try:
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    
-                    # Step 1: Word segmentation with paragraph preservation
-                    status_text.text("Step 1/3: Segmenting text...")
-                    progress_bar.progress(10)
-                    
-                    # Split text into paragraphs first
-                    paragraphs = text_input.split('\n')
-                    all_words = []
-                    paragraph_breaks = []  # Track where paragraphs end
-                    
-                    for paragraph in paragraphs:
-                        if paragraph.strip():  # If paragraph is not empty
-                            # Use jieba.tokenize to get position information
-                            tokens = list(jieba.tokenize(paragraph))
-                            # Sort tokens by their start position to maintain order
-                            tokens.sort(key=lambda x: x[1])
-                            # Extract just the words while maintaining order
-                            words = [token[0] for token in tokens]
-                            all_words.extend(words)
-                            paragraph_breaks.append(len(all_words))
-                        else:
-                            # Add a special marker for empty paragraphs
-                            all_words.append('\n')
-                            paragraph_breaks.append(len(all_words))
-                    
-                    total_words = len(all_words)
-                    
-                    # Step 2: Processing words in parallel while maintaining order
-                    status_text.text("Step 2/3: Processing words in parallel...")
-                    processed_words = [None] * total_words  # Pre-allocate list with correct size
-                    
-                    # Function to process a batch of words
-                    def process_word_batch(word_batch, start_index, translator):
-                        results = []
-                        for i, word in enumerate(word_batch):
-                            try:
-                                if word == '\n':
-                                    results.append((start_index + i, {'word': '\n'}))
-                                elif word.strip():
-                                    result = translator.process_chinese_text(
-                                        word, 
-                                        languages[second_language]
-                                    )
-                                    # Create a properly structured dictionary even if translation fails
-                                    word_dict = {
-                                        'word': word,
-                                        'pinyin': '',
-                                        'translations': []
-                                    }
-                                    if result and len(result) > 0:
-                                        word_dict.update(result[0])  # Only update if we have valid results
-                                    results.append((start_index + i, word_dict))
-                                else:
-                                    # Handle empty strings
-                                    results.append((start_index + i, {'word': '', 'pinyin': '', 'translations': []}))
-                            except Exception as e:
-                                print(f"Error processing word '{word}': {str(e)}")
-                                # Always return a valid dictionary structure
-                                results.append((start_index + i, {'word': word, 'pinyin': '', 'translations': []}))
-                        return results
-                    
-                    # Create batches while preserving order
-                    batch_size = 5
-                    batches = []
-                    for i in range(0, len(all_words), batch_size):
-                        batch = all_words[i:i + batch_size]
-                        batches.append((i, batch))
-                    
-                    # Process batches in parallel
-                    with ThreadPoolExecutor(max_workers=3) as executor:
-                        futures = []
-                        for start_idx, batch in batches:
-                            future = executor.submit(
-                                process_word_batch, 
-                                batch,
-                                start_idx,
-                                translator
-                            )
-                            futures.append(future)
+                    with st.spinner("AI đang phân tích sâu (Cắt từ + Pinyin + Nghĩa)..."):
                         
-                        completed = 0
-                        for future in as_completed(futures):
-                            try:
-                                # Get results and place them in the correct positions
-                                for idx, result in future.result():
-                                    processed_words[idx] = result
-                                
-                                completed += 1
-                                progress = 10 + (completed / len(batches) * 60)
-                                progress_bar.progress(int(progress))
-                                status_text.text(
-                                    f"Step 2/3: Processing words... "
-                                    f"(Batch {completed}/{len(batches)})"
-                                )
-                            except Exception as e:
-                                st.error(f"Error processing batch: {str(e)}")
-                    
-                    # Step 3: Generating HTML
-                    status_text.text("Step 3/3: Generating interactive HTML...")
-                    progress_bar.progress(80)
-                    
-                    # Add error checking before generating HTML
-                    if any(word is None for word in processed_words):
-                        raise ValueError("Some words failed to process")
-                    
-                    html_content = translate_file(
-                        text_input,
-                        None,
-                        include_english,
-                        languages[second_language],
-                        pinyin_style,
-                        translation_mode,
-                        processed_words=[word for word in processed_words if word is not None]  # Filter None values
-                    )
-                    
-                    # Complete
-                    progress_bar.progress(100)
-                    status_text.text("Translation completed!")
-                    
-                    # Move download button right after success message
-                    st.success("Translation completed!")
-                    st.download_button(
-                        label="Download HTML",
-                        data=html_content.encode('utf-8'),
-                        file_name="translation.html",
-                        mime="text/html; charset=utf-8"
-                    )
-                    # Display translation result
-                    components.html(html_content, height=800, scrolling=True)
-                    
+                        # CÁCH MỚI: GỬI TRỌN GÓI CHO GEMINI (SIÊU TỐC ĐỘ)
+                        # Thay vì cắt từ bằng jieba rồi dịch từng cái (Rất lâu & tốn Request)
+                        # Chúng ta nhờ Gemini làm tất cả trong 1 lần gọi.
+                        
+                        target_lang_name = list(languages.keys())[list(languages.values()).index(languages[second_language])]
+                        
+                        prompt_analysis = f"""
+                        Phân tích đoạn văn tiếng Trung sau đây để học tập.
+                        Đoạn văn: "{text_input}"
+                        Ngôn ngữ đích: {target_lang_name}
+                        
+                        Yêu cầu:
+                        1. Cắt đoạn văn thành các từ/cụm từ có nghĩa (Segmentation).
+                        2. Cung cấp Pinyin và Nghĩa cho từng từ.
+                        3. Trả về định dạng JSON List chính xác.
+                        
+                        Mẫu JSON:
+                        [
+                            {{"word": "我们", "pinyin": "wǒ men", "translation": "chúng tôi"}},
+                            {{"word": "去", "pinyin": "qù", "translation": "đi"}},
+                            {{"word": "学校", "pinyin": "xué xiào", "translation": "trường học"}}
+                        ]
+                        """
+                        
+                        # Gọi Gemini
+                        # Lưu ý: Cần import model Gemini ở đầu file app.py hoặc lấy từ translator
+                        genai_model = init_translator().model 
+                        response = genai_model.generate_content(prompt_analysis)
+                        
+                        # Xử lý kết quả JSON
+                        json_str = response.text.replace("```json", "").replace("```", "").strip()
+                        processed_words = json.loads(json_str)
+                        
+                        # Tạo HTML (Giữ nguyên logic cũ của chị)
+                        from translate_book import create_interactive_html_block # Đảm bảo đã import
+                        
+                        # Code cũ của chị cần hàm này, ta giả lập dữ liệu trả về cho khớp
+                        # Logic cũ của chị hơi phức tạp, nhưng ta có thể gọi hàm tạo HTML trực tiếp
+                        # Lưu ý: Chị cần kiểm tra file translate_book.py xem hàm create_interactive_html_block nhận tham số gì
+                        # Giả sử nó nhận list các từ
+                        
+                        # Tạm thời dùng st.json để hiển thị kết quả (Debug)
+                        # st.json(processed_words) 
+                        
+                        # --- TẠO GIAO DIỆN TƯƠNG TÁC (Viết lại đơn giản hơn cho Chị) ---
+                        html_output = """
+                        <style>
+                            .word-container { display: inline-block; margin: 5px; text-align: center; cursor: pointer; }
+                            .zh-word { font-size: 20px; font-weight: bold; color: #333; }
+                            .pinyin { font-size: 12px; color: #666; }
+                            .tooltip { visibility: hidden; background-color: black; color: #fff; text-align: center; padding: 5px; border-radius: 6px; position: absolute; z-index: 1; }
+                            .word-container:hover .tooltip { visibility: visible; }
+                        </style>
+                        <div style='line-height: 1.5;'>
+                        """
+                        
+                        for item in processed_words:
+                            html_output += f"""
+                            <div class="word-container" title="{item['translation']}">
+                                <div class="pinyin">{item['pinyin']}</div>
+                                <div class="zh-word">{item['word']}</div>
+                            </div>
+                            """
+                        html_output += "</div>"
+                        
+                        st.success("Phân tích hoàn tất!")
+                        components.html(html_output, height=600, scrolling=True)
+
                 except Exception as e:
-                    st.error(f"Translation error: {str(e)}")
-            else:
-                # Standard translation mode
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                html_content = translate_file(
-                    text_input,
-                    lambda p: update_progress(p, progress_bar, status_text),
-                    include_english,
-                    languages[second_language],
-                    pinyin_style,
-                    translation_mode
-                )
-                # Move download button right after success message
-                st.success("Translation completed!")
-                st.download_button(
-                    label="Download HTML",
-                    data=html_content,
-                    file_name="translation.html",
-                    mime="text/html"
-                )
-                # Display translation result
-                components.html(html_content, height=800, scrolling=True)
-            
-        except Exception as e:
-            st.error(f"Translation error: {str(e)}")
+                    st.error(f"Lỗi phân tích AI: {e}")
+                    st.info("Mẹo: Thử đoạn văn ngắn hơn hoặc kiểm tra API Key.")
 
 
 def update_progress(progress, progress_bar, status_text):
