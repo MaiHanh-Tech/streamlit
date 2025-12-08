@@ -2,111 +2,121 @@ import google.generativeai as genai
 import streamlit as st
 import json
 import re
+import uuid
 import time
+from google.api_core.exceptions import ResourceExhausted
+# Thư viện pypinyin (Nếu bị lỗi chị nhớ cài: pip install pypinyin)
+from pypinyin import pinyin, Style 
 
 class Translator:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.initialized = False
+        return cls._instance
+
     def __init__(self):
-        # --- BẢO MẬT TUYỆT ĐỐI ---
-        # Không dán Key ở đây. Code sẽ tự mò vào Két sắt (st.secrets) để lấy.
-        try:
-            # Ưu tiên Gemini 2.5 Pro
-            self.model = genai.GenerativeModel('gemini-2.5-pro')
-            self.model_name = "gemini-2.5-pro"
-        except Exception:
+        if not self.initialized:
+            # --- Cấu hình GEMINI (Thay thế Azure) ---
             try:
-                # Trượt về Gemini 2.5 Flash
-                self.model = genai.GenerativeModel('gemini-2.5-flash')
-                self.model_name = "gemini-2.5-flash"
-            except Exception:
-                # Trượt về Gemini-Pro (Dự phòng)
-                self.model = genai.GenerativeModel('gemini-pro')
-                self.model_name = "gemini-pro"
-
-    def split_text(self, text, chunk_size=3000):
-        """Hàm cắt nhỏ văn bản để tránh lỗi AI bị ngắt quãng"""
-        chunks = []
-        current_chunk = ""
-        # Tách theo dòng để tránh cắt giữa câu
-        lines = text.split('\n')
-        
-        for line in lines:
-            if len(current_chunk) + len(line) < chunk_size:
-                current_chunk += line + "\n"
-            else:
-                chunks.append(current_chunk)
-                current_chunk = line + "\n"
-        if current_chunk:
-            chunks.append(current_chunk)
-        return chunks
-
-    def translate_standard(self, text, source_lang, target_lang):
-        """Dịch chuẩn (Có hỗ trợ văn bản dài vô tận)"""
-        
-        # 1. Nếu văn bản ngắn (< 3000 ký tự): Dịch 1 lần cho nhanh
-        if len(text) < 3000:
-            return self._translate_chunk(text, source_lang, target_lang)
-        
-        # 2. Nếu văn bản dài: Cắt nhỏ và dịch từng phần
-        else:
-            chunks = self.split_text(text)
-            full_translation = ""
-            total_chunks = len(chunks)
-            
-            # Tạo thanh tiến trình trên giao diện
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            for i, chunk in enumerate(chunks):
-                status_text.text(f"Đang dịch phần {i+1}/{total_chunks}...")
-                translated_part = self._translate_chunk(chunk, source_lang, target_lang)
-                full_translation += translated_part + "\n"
+                # Lấy API Key từ secrets
+                api_key = st.secrets["api_keys"]["gemini_api_key"]
+                genai.configure(api_key=api_key)
                 
-                # Cập nhật tiến trình
-                progress = int((i + 1) / total_chunks * 100)
-                progress_bar.progress(progress)
-                time.sleep(0.5) # Nghỉ xíu để không bị spam API
-            
-            status_text.empty()
-            progress_bar.empty()
-            return full_translation
+                # Ưu tiên Pro, trượt về Flash
+                try:
+                    self.model = genai.GenerativeModel('gemini-2.5-pro')
+                except:
+                    self.model = genai.GenerativeModel('gemini-2.5-flash')
+                
+            except Exception as e:
+                st.error(f"Lỗi cấu hình API Gemini: {str(e)}")
+                self.model = None
+                
+            self.translated_words = {} # Cache
+            self.initialized = True
 
-    def _translate_chunk(self, text, source, target):
-        """Hàm con để dịch 1 đoạn"""
-        if not text.strip(): return ""
+    def _run_gemini_safe(self, prompt, is_json=False):
+        """Hàm gọi AI an toàn, chống lỗi Quota"""
+        if not self.model: return None
+        for i in range(3):
+            try:
+                response = self.model.generate_content(prompt)
+                if is_json:
+                    # Dọn dẹp JSON
+                    json_str = response.text.strip().replace("```json", "").replace("```", "")
+                    return json.loads(json_str)
+                return response.text
+            except ResourceExhausted: 
+                time.sleep(5)
+            except Exception as e:
+                return None
+        return None
+
+    def translate_text(self, text, target_lang):
+        """Dịch cả đoạn văn (Standard Translation) - Thay thế _call_azure_translate"""
+        cache_key = f"{text}_std_{target_lang}"
+        if cache_key in self.translated_words:
+            return self.translated_words[cache_key]
+        
+        # Lấy tên ngôn ngữ để Gemini hiểu
+        target_lang_name = st.session_state.get('languages', {}).get(target_lang, target_lang)
+
+        prompt = f"""
+        Act as a professional book translator. Translate the Chinese text to {target_lang_name}.
+        Text: "{text}"
+        """
+        translation = self._run_gemini_safe(prompt)
+        
+        if translation:
+            self.translated_words[cache_key] = translation
+        return translation or ""
+
+    def process_chinese_text(self, word, target_lang):
+        """Process Chinese word for word-by-word translation (Interactive)"""
+        
+        target_lang_name = st.session_state.get('languages', {}).get(target_lang, target_lang)
+        
+        # 1. Get Pinyin (Dùng pypinyin gốc)
+        pinyin_text = ""
+        try:
+            pinyin_list = pinyin(word, style=Style.TONE)[0][0]
+            pinyin_text = ' '.join(pinyin_list)
+        except: pass
+        
+        # 2. Get Translations (Dùng Gemini)
+        cache_key = f"{word}_int_{target_lang}"
+        if cache_key in self.translated_words:
+            return self.translated_words[cache_key]
         
         prompt = f"""
-        Act as a professional book translator.
-        Translate the text below from {source} to {target}.
+        Phân tích từ Tiếng Trung sau cho người học.
+        Từ: "{word}"
         
-        Requirements:
-        1. Accuracy: Keep the original meaning.
-        2. Flow: Make it sound natural and literary (như văn phong sách).
-        3. Terminology: Use consistent terminology.
+        YÊU CẦU: Dịch sang Tiếng Việt và Tiếng Anh (nếu không có yêu cầu đặc biệt). 
+        Trả về kết quả ở định dạng JSON ARRAY. Mỗi object có key: 'translations'.
         
-        Text to translate:
-        {text}
+        Ví dụ: [{{ "word": "中", "pinyin": "zhōng", "translations": ["Giữa", "Center"]}}]
         """
-        try:
-            response = self.model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            return f"\n[Lỗi đoạn này: {str(e)}]\n"
-
-    def analyze_paragraph(self, text, source_lang, target_lang):
-        """Phân tích từ vựng (Giữ nguyên logic cũ)"""
-        # (Chị dùng code cũ của hàm này hoặc để em viết lại ngắn gọn ở đây)
-        # Nếu chị chỉ cần dịch sách thì hàm này ít dùng, nhưng em vẫn để lại để không lỗi code
         
-        extra = "Pinyin/IPA"
-        if "Trung" in source_lang or "Chinese" in source_lang: extra = "Pinyin"
+        # Gọi AI lấy dịch nghĩa (translations)
+        translations_data = self._run_gemini_safe(prompt, is_json=True)
         
-        prompt = f"""
-        Analyze logic for learners. Source: {source_lang}, Target: {target_lang}.
-        Text: "{text[:1000]}" (Limit analysis to first 1000 chars to save time)
-        Return JSON list: [{{"word": "...", "pinyin": "...", "translation": "..."}}]
-        """
-        try:
-            response = self.model.generate_content(prompt)
-            cleaned = response.text.strip().replace("```json", "").replace("```", "")
-            return json.loads(cleaned)
-        except: return []
+        if translations_data and len(translations_data) > 0:
+            result = {
+                'word': word,
+                'pinyin': pinyin_text,
+                # Lấy translations từ kết quả JSON của AI
+                'translations': translations_data[0].get('translations', [])
+            }
+            self.translated_words[cache_key] = [result] # Lưu cache dưới dạng list để tương thích
+            return [result]
+        
+        # Trả về cấu trúc lỗi để App không sập
+        return [{
+            'word': word,
+            'pinyin': pinyin_text,
+            'translations': ['Lỗi dịch thuật (AI Error)']
+        }]
