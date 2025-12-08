@@ -17,14 +17,22 @@ class Translator:
         return cls._instance
 
     def __init__(self):
-        if not self.initialized:
-            # --- THAY ĐỔI: CẤU HÌNH GEMINI (THAY CHO AZURE) ---
+        # --- BẢO MẬT TUYỆT ĐỐI ---
+        # Không dán Key ở đây. Code sẽ tự mò vào Két sắt (st.secrets) để lấy.
+        try:
+            # Ưu tiên Gemini 2.5 Pro
+            self.model = genai.GenerativeModel('gemini-2.5-pro')
+            self.model_name = "gemini-2.5-pro"
+        except Exception:
             try:
-                api_key = st.secrets["api_keys"]["gemini_api_key"]
-                genai.configure(api_key=api_key)
+                # Trượt về Gemini 2.5 Flash
+                self.model = genai.GenerativeModel('gemini-2.5-flash')
+                self.model_name = "gemini-2.5-flash"
+            except Exception:
+                # Trượt về Gemini-Pro (Dự phòng)
+                self.model = genai.GenerativeModel('gemini-pro')
+                self.model_name = "gemini-pro"
                 
-                # Ưu tiên Flash cho nhanh (tương đương tốc độ Azure)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
             except Exception as e:
                 print(f"Gemini Init Error: {str(e)}")
                 self.model = None
