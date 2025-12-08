@@ -160,8 +160,32 @@ def show_user_interface(user_password=None):
                 with st.spinner("Đang dịch..."):
                     result = translator.translate_standard(text_input, source_lang, target_lang)
                     st.success("✅ Kết quả:")
-                    st.text_area("", value=result, height=300)
-                    st.download_button("Download Text", result)
+                    
+                    # Chị cần dùng st.text_area để có thể copy/paste được
+                    st.text_area("Kết quả:", value=result, height=300)
+                    
+                    # Nút 1: Tải về file .TXT (Văn bản thuần túy)
+                    st.download_button("💾 Download Text (TXT)", result, file_name="translation.txt")
+                    
+                    # Nút 2: Tải về file .HTML (Giữ nguyên định dạng Markdown nếu có)
+                    # Chuyển kết quả sang định dạng HTML
+                    html_content = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head><meta charset="utf-8"><title>Translation Result</title></head>
+                    <body>
+                    <h1>Translation from {source_lang} to {target_lang}</h1>
+                    <hr>
+                    <pre style="white-space: pre-wrap; font-family: sans-serif; font-size: 16px;">{result}</pre>
+                    </body>
+                    </html>
+                    """
+                    st.download_button(
+                        "🌐 Download HTML", 
+                        html_content, 
+                        file_name="translation_result.html", 
+                        mime="text/html"
+                    )
 
         except Exception as e:
             st.error(f"Lỗi: {str(e)}")
