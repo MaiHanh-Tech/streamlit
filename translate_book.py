@@ -9,12 +9,10 @@ import sys
 import time
 import random
 import streamlit as st
-# from translator import Translator # Bỏ vì đã init trong app.py
 
 
 def split_sentence(text: str) -> List[str]:
     """Split text into sentences or meaningful chunks"""
-    # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text.strip())
 
     # Segmentation logic (Giữ nguyên logic gốc của anh ấy)
@@ -69,7 +67,7 @@ def convert_to_pinyin(text: str, style: str = 'tone_marks') -> str:
         return "[Pinyin Error]"
 
 
-def translate_text(text, target_lang):
+def translate_text(text, source_lang, target_lang, include_english): # <--- ĐÃ SỬA
     """Translate text using Translator class (Gemini)"""
     if 'translator' not in st.session_state:
         from translator import Translator
@@ -77,35 +75,36 @@ def translate_text(text, target_lang):
     
     try:
         # Gọi hàm translate_text đã được sửa trong translator.py
-        translation = st.session_state.translator.translate_text(text, target_lang)
+        translation = st.session_state.translator.translate_text(text, source_lang, target_lang, include_english)
         return translation
     except Exception as e:
         print(f"Translation error: {str(e)}")
         return ""
 
 
-def process_chunk(chunk: str, index: int, executor: ThreadPoolExecutor, include_english: bool, second_language: str, pinyin_style: str = 'tone_marks') -> tuple:
+def process_chunk(chunk: str, index: int, executor: ThreadPoolExecutor, include_english: bool, source_language: str, target_language: str, pinyin_style: str = 'tone_marks') -> tuple: # <--- ĐÃ SỬA
     """Xử lý từng đoạn nhỏ (Standard Translation)"""
-    # Ngủ ngẫu nhiên để tránh rate limit
     time.sleep(random.uniform(0.1, 0.5)) 
     
     try:
-        # Get pinyin
-        pinyin_text = convert_to_pinyin(chunk, pinyin_style)
+        # Pinyin chỉ chạy nếu Source là Tiếng Trung (theo App gốc)
+        pinyin_text = convert_to_pinyin(chunk, pinyin_style) if source_language == 'Chinese' else ''
 
         # Get translations (Gemini sẽ trả về cả 2 bản dịch nếu có)
-        second_trans = translate_text(chunk, second_language)
+        full_translation = translate_text(chunk, source_language, target_language, include_english)
         
-        # Logic phức tạp để tách English và Ngôn ngữ đích
-        translations = second_trans.split('\n')
+        # Logic tách English và Ngôn ngữ đích
+        translations = full_translation.split('\n')
         
         final_translations = []
-        if include_english and second_language != 'en':
+        
+        if include_english and target_language != 'English':
             # Giả định câu đầu là ngôn ngữ đích, câu sau là English (Do Gemini trả về)
             final_translations.append(translations[1] if len(translations) > 1 else "[English Trans Error]")
-            final_translations.append(translations[0] if len(translations) > 0 else "[Second Lang Trans Error]")
+            final_translations.append(translations[0] if len(translations) > 0 else "[Target Lang Trans Error]")
         else:
-            final_translations.append(translations[0] if len(translations) > 0 else "[Second Lang Trans Error]")
+            # Chỉ lấy bản dịch chính
+            final_translations.append(translations[0] if len(translations) > 0 else "[Target Lang Trans Error]")
         
         # Index, Original, Pinyin, *Translations
         return (index, chunk, pinyin_text, *final_translations)
@@ -117,7 +116,6 @@ def process_chunk(chunk: str, index: int, executor: ThreadPoolExecutor, include_
 
 def create_html_block(results: tuple, include_english: bool) -> str:
     """Tạo HTML block cho Standard Translation"""
-    # Giữ nguyên HTML gốc
     speak_button = '''
         <button class="speak-button" onclick="speakSentence(this.parentElement.textContent.replace('🔊', ''))">
             <svg viewBox="0 0 24 24">
@@ -156,7 +154,6 @@ def create_interactive_html_block(results: tuple, include_english: bool) -> str:
     current_paragraph = []
     paragraphs = []
     
-    # Logic nhóm từ thành đoạn
     for word in word_data:
         if word.get('word') == '\n':
             if current_paragraph:
@@ -168,18 +165,15 @@ def create_interactive_html_block(results: tuple, include_english: bool) -> str:
     if current_paragraph:
         paragraphs.append(current_paragraph)
     
-    # Tạo HTML từng đoạn
     for paragraph in paragraphs:
         content_html += '<p class="interactive-paragraph">'
         for word_data in paragraph:
             
-            # Xử lý nội dung tooltip
             translations_list = word_data.get('translations', [])
             tooltip_content = ""
             if translations_list:
-                tooltip_content = "\n".join(translations_list) # Ghép các bản dịch lại
+                tooltip_content = "\n".join(translations_list)
                 
-            # Xử lý Pinyin
             pinyin_text = word_data.get('pinyin', '')
             
             if word_data.get('word') and word_data.get('word').strip():
@@ -198,14 +192,14 @@ def create_interactive_html_block(results: tuple, include_english: bool) -> str:
 
 
 def translate_file(input_text: str, progress_callback=None, include_english=True, 
-                  second_language="vi", pinyin_style='tone_marks', 
+                  source_language="Chinese", target_language="Vietnamese", pinyin_style='tone_marks', 
                   translation_mode="Standard Translation", processed_words=None):
     """Translate text with progress updates"""
     try:
         text = input_text.strip()
         
         if translation_mode == "Interactive Word-by-Word" and processed_words is not None:
-            # Interactive mode (Đã có processed_words từ app.py)
+            # Interactive mode
             with open('template.html', 'r', encoding='utf-8') as template_file:
                 html_content = template_file.read()
             
@@ -243,7 +237,8 @@ def translate_file(input_text: str, progress_callback=None, include_english=True
                         index,
                         executor,
                         include_english,
-                        second_language,
+                        source_language, # Đã sửa
+                        target_language, # Đã sửa
                         pinyin_style
                     )
                     futures.append((index, future))
@@ -257,8 +252,6 @@ def translate_file(input_text: str, progress_callback=None, include_english=True
                             current_progress = min(100, (chunks_processed / total_chunks) * 100)
                             progress_callback(current_progress)
                     except Exception as e:
-                        print(f"\nError getting result for chunk {index}: {e}")
-                        # Dùng kết quả lỗi
                         error_translations = ["[Translation Error]"] * (1 + int(include_english))
                         all_results.append((index, chunks[index], "[Pinyin Error]", *error_translations))
                         chunks_processed += 1
@@ -267,7 +260,7 @@ def translate_file(input_text: str, progress_callback=None, include_english=True
                             progress_callback(current_progress)
                         continue
 
-            all_results.sort(key=lambda x: x[0]) # Sắp xếp lại theo index
+            all_results.sort(key=lambda x: x[0])
             
             for result in all_results:
                 translation_content += create_html_block(result, include_english)
@@ -281,5 +274,4 @@ def translate_file(input_text: str, progress_callback=None, include_english=True
             return html_content.replace('{{content}}', translation_content)
 
     except Exception as e:
-        print(f"Translation error: {str(e)}")
         raise
