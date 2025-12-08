@@ -5,7 +5,6 @@ import re
 import uuid
 import time
 from google.api_core.exceptions import ResourceExhausted
-# Thư viện pypinyin (Nếu bị lỗi chị nhớ cài: pip install pypinyin)
 from pypinyin import pinyin, Style 
 
 class Translator:
@@ -19,13 +18,10 @@ class Translator:
 
     def __init__(self):
         if not self.initialized:
-            # --- Cấu hình GEMINI (Thay thế Azure) ---
             try:
-                # Lấy API Key từ secrets
                 api_key = st.secrets["api_keys"]["gemini_api_key"]
                 genai.configure(api_key=api_key)
                 
-                # Ưu tiên Pro, trượt về Flash
                 try:
                     self.model = genai.GenerativeModel('gemini-2.5-pro')
                 except:
@@ -45,7 +41,6 @@ class Translator:
             try:
                 response = self.model.generate_content(prompt)
                 if is_json:
-                    # Dọn dẹp JSON
                     json_str = response.text.strip().replace("```json", "").replace("```", "")
                     return json.loads(json_str)
                 return response.text
@@ -55,18 +50,27 @@ class Translator:
                 return None
         return None
 
-    def translate_text(self, text, target_lang):
-        """Dịch cả đoạn văn (Standard Translation) - Thay thế _call_azure_translate"""
-        cache_key = f"{text}_std_{target_lang}"
+    def translate_text(self, text, source_lang, target_lang, include_english): # <--- ĐÃ SỬA
+        """Dịch cả đoạn văn (Standard Translation)"""
+        cache_key = f"{text}_std_{source_lang}_{target_lang}_{include_english}"
         if cache_key in self.translated_words:
             return self.translated_words[cache_key]
         
-        # Lấy tên ngôn ngữ để Gemini hiểu
         target_lang_name = st.session_state.get('languages', {}).get(target_lang, target_lang)
+        source_lang_name = st.session_state.get('languages', {}).get(source_lang, source_lang)
+        
+        # Thêm yêu cầu dịch sang Anh
+        english_req = "Dịch thêm sang Tiếng Anh." if include_english and target_lang != 'en' else ""
 
         prompt = f"""
-        Act as a professional book translator. Translate the Chinese text to {target_lang_name}.
+        Act as a professional book translator.
+        Translate the following text from {source_lang_name} to {target_lang_name}. {english_req}
+        
         Text: "{text}"
+        
+        YÊU CẦU ĐỊNH DẠNG:
+        1. Bản dịch chính thức ({target_lang_name}) nằm ở dòng đầu tiên.
+        2. Nếu có yêu cầu dịch thêm, bản dịch phụ (Tiếng Anh) nằm ở dòng thứ hai.
         """
         translation = self._run_gemini_safe(prompt)
         
@@ -75,11 +79,12 @@ class Translator:
         return translation or ""
 
     def process_chinese_text(self, word, target_lang):
-        """Process Chinese word for word-by-word translation (Interactive)"""
+        """
+        Phân tích từng từ (Interactive Mode)
+        LƯU Ý: Chế độ này chỉ hoạt động tốt khi SOURCE là TIẾNG TRUNG
+        """
         
-        target_lang_name = st.session_state.get('languages', {}).get(target_lang, target_lang)
-        
-        # 1. Get Pinyin (Dùng pypinyin gốc)
+        # 1. Get Pinyin (Vẫn phải dùng Pinyin vì đây là App gốc)
         pinyin_text = ""
         try:
             pinyin_list = pinyin(word, style=Style.TONE)[0][0]
@@ -91,30 +96,28 @@ class Translator:
         if cache_key in self.translated_words:
             return self.translated_words[cache_key]
         
+        target_lang_name = st.session_state.get('languages', {}).get(target_lang, target_lang)
+
         prompt = f"""
-        Phân tích từ Tiếng Trung sau cho người học.
-        Từ: "{word}"
+        Phân tích từ Tiếng Trung: "{word}"
         
-        YÊU CẦU: Dịch sang Tiếng Việt và Tiếng Anh (nếu không có yêu cầu đặc biệt). 
+        YÊU CẦU: Dịch sang Tiếng Việt và Tiếng Anh. 
         Trả về kết quả ở định dạng JSON ARRAY. Mỗi object có key: 'translations'.
         
         Ví dụ: [{{ "word": "中", "pinyin": "zhōng", "translations": ["Giữa", "Center"]}}]
         """
         
-        # Gọi AI lấy dịch nghĩa (translations)
         translations_data = self._run_gemini_safe(prompt, is_json=True)
         
         if translations_data and len(translations_data) > 0:
             result = {
                 'word': word,
                 'pinyin': pinyin_text,
-                # Lấy translations từ kết quả JSON của AI
                 'translations': translations_data[0].get('translations', [])
             }
-            self.translated_words[cache_key] = [result] # Lưu cache dưới dạng list để tương thích
+            self.translated_words[cache_key] = [result]
             return [result]
         
-        # Trả về cấu trúc lỗi để App không sập
         return [{
             'word': word,
             'pinyin': pinyin_text,
