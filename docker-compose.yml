@@ -3,7 +3,7 @@ services:
   streamlit_app:
     # Build container from current directory's Dockerfile
     build: .
-    # Mở cổng 8502 (ngoài) -> 8501 (trong container) cho Streamlit
+    # Chỉ mở cổng 8502 cho Streamlit thôi
     ports:
       - "8502:8501" 
     volumes:
@@ -18,66 +18,16 @@ services:
       - STREAMLIT_SERVER_PORT=8501
       - STREAMLIT_SERVER_HEADLESS=true
       - STREAMLIT_SERVER_FILE_WATCHER_TYPE=none
-      # QUAN TRỌNG: Thiết lập URL nội bộ cho App gọi TTS
-      # tts_service là tên của service bên dưới, 8000 là cổng
-      - TTS_SERVER_URL=http://tts_service:8000 
     restart: unless-stopped
     container_name: streamlit_app
     networks:
       - streamlit_network
-    depends_on:
-      - tts_service # Đảm bảo server TTS chạy trước
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s
       timeout: 10s
       retries: 3
   
-  tts_service:
-    build: .
-    # QUAN TRỌNG: Lệnh chạy file tts_server.py
-    command: python tts_server.py
-    # Mở cổng 8000 (ngoài) -> 8000 (trong container) cho TTS
-    ports:
-      - "8000:8000" 
-    volumes:
-      - .:/app
-    container_name: tts_server
-    networks:
-      - streamlit_network
-    restart: unless-stopped
-    
 networks:
   streamlit_network:
     driver: bridge
-```
-
-### 🎯 NHỮNG GÌ ĐÃ ĐƯỢC THAY ĐỔI:
-
-1.  **Thêm service `tts_service`:** Khối lệnh mới để build và chạy file `tts_server.py`.
-2.  **Cổng 8000:** Mở thêm cổng 8000 cho Server TTS.
-3.  **Môi trường `TTS_SERVER_URL`:** Em đã thêm biến môi trường này vào service `streamlit_app`.
-    *   **Lưu ý:** Chị cần sửa lại file **`template.html`** để nó sử dụng biến môi trường này (thay vì hardcode `http://localhost:8000`) để App gọi được Server TTS nội bộ của Docker.
-
-#### 📝 HƯỚNG DẪN SỬA FILE `template.html` LẦN CUỐI:
-
-Để App gọi TTS đúng trong môi trường Docker, chị chỉ cần sửa lại 1 dòng trong file **`template.html`** thành:
-
-```javascript
-// TRONG FILE TEMPLATE.HTML
-<script>
-    // Lấy URL từ Streamlit (phức tạp hơn một chút, nhưng an toàn nhất là hardcode lại)
-    // Hoặc đơn giản nhất, chị sửa lại hardcode thành tên service nội bộ của Docker
-    const TTS_SERVER_URL = 'http://localhost:8000'; // (Nếu test trên máy)
-    // OR
-    // const TTS_SERVER_URL = 'http://TTS_SERVER_EXTERNAL_IP:8000'; // (Nếu chạy trên Cloud)
-
-    // ... (Phần code JavaScript còn lại) ...
-</script>
-```
-
-Em khuyến nghị chị **giữ nguyên `http://localhost:8000`** trong `template.html` và chạy Docker, vì Docker sẽ tự ánh xạ. Sau đó, chị chạy lại Docker bằng lệnh:
-
-```bash
-docker-compose down
-docker-compose up --build -d
