@@ -98,7 +98,6 @@ def create_interactive_html(processed_words, pinyin_style):
         return html_content.replace('{{content}}', translation_content)
         
     except Exception as e:
-        # st.error(f"Error creating interactive HTML: {str(e)}")
         return None
 
 
@@ -258,7 +257,7 @@ def show_user_interface(user_password=None):
         # Track usage
         pm.track_usage(st.session_state.current_user, chars_count)
         
-        # Show current usage
+        # Show current usage (Giữ nguyên)
         daily_usage = pm.get_daily_usage(st.session_state.current_user)
         daily_limit = pm.get_user_limit(st.session_state.current_user)
         
@@ -292,60 +291,89 @@ def show_user_interface(user_password=None):
         
         
         # --- START TRANSLATION LOGIC ---
-        if translation_mode == "Interactive Word-by-Word":
-            if source_language != "Chinese":
-                 st.error("Interactive mode is currently only supported for Chinese source text.")
-                 return
+        try:
+            if translation_mode == "Interactive Word-by-Word":
+                if source_language != "Chinese":
+                    st.error("Interactive mode is currently only supported for Chinese source text.")
+                    return
 
-            try:
+                try:
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    paragraphs = text_input.split('\n')
+                    all_words = []
+                    
+                    status_text.text("Step 1/2: Segmenting text...")
+                    
+                    for paragraph in paragraphs:
+                        if paragraph.strip(): 
+                            words = [char for char in paragraph] 
+                            all_words.extend(words)
+                            all_words.append(' ') 
+                        else:
+                            all_words.append('\n')
+                    
+                    status_text.text("Step 2/2: Processing words in parallel...")
+                    
+                    processed_words = []
+                    total_chars = len([w for w in all_words if w.strip() and w != '\n'])
+                    word_count = 0
+                    
+                    for word in all_words:
+                        if word.strip() and word != '\n':
+                            result = translator.process_chinese_text(
+                                word, 
+                                LANGUAGES[target_language]
+                            )
+                            if result and len(result) > 0:
+                                processed_words.append(result[0])
+                            
+                            word_count += 1
+                            progress = 5 + (word_count / total_chars * 90)
+                            progress_bar.progress(int(progress))
+                        elif word == '\n':
+                            processed_words.append({'word': '\n'})
+                        
+                    status_text.text("Generating interactive HTML...")
+                    progress_bar.progress(100)
+                    
+                    html_content = create_interactive_html(
+                        processed_words,
+                        pinyin_style
+                    )
+                    
+                    st.success("Translation completed!")
+                    st.download_button(
+                        label="Download HTML",
+                        data=html_content.encode('utf-8'),
+                        file_name="translation.html",
+                        mime="text/html; charset=utf-8"
+                    )
+                    components.html(html_content, height=800, scrolling=True)
+                    
+                except Exception as e:
+                    st.error(f"Interactive Translation error: {str(e)}")
+
+            else:
+                # Standard translation mode
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                # Cắt văn bản thành từng câu/từng đoạn để xử lý song song
-                paragraphs = text_input.split('\n')
-                all_words = []
-                
-                # Step 1: Cắt từ và ghép lại
-                status_text.text("Step 1/2: Segmenting text...")
-                
-                for paragraph in paragraphs:
-                    if paragraph.strip(): 
-                        words = [char for char in paragraph] 
-                        all_words.extend(words)
-                        all_words.append(' ') 
-                    else:
-                        all_words.append('\n')
-                
-                # Bước 2: Xử lý từng từ (Gọi Gemini)
-                status_text.text("Step 2/2: Processing words in parallel...")
-                
-                processed_words = []
-                total_chars = len([w for w in all_words if w.strip() and w != '\n'])
-                word_count = 0
-                
-                for word in all_words:
-                    if word.strip() and word != '\n':
-                        result = translator.process_chinese_text(
-                            word, 
-                            LANGUAGES[target_language]
-                        )
-                        if result and len(result) > 0:
-                            processed_words.append(result[0])
-                        
-                        word_count += 1
-                        progress = 5 + (word_count / total_chars * 90)
-                        progress_bar.progress(int(progress))
-                    elif word == '\n':
-                        processed_words.append({'word': '\n'})
-                    
-                # Bước 3: Generating HTML
-                status_text.text("Generating interactive HTML...")
-                progress_bar.progress(100)
-                
-                html_content = create_interactive_html(
-                    processed_words,
-                    pinyin_style
+                # Gọi hàm dịch cả đoạn
+                html_content = translate_file(
+                    text_input,
+                    lambda p: update_progress(p, progress_bar, status_text),
+                    include_english,
+                    LANGUAGES[source_language],
+                    LANGUAGES[target_language],
+                    pinyin_style,
+                    translation_mode
                 )
+                
+                # Cập nhật tiến trình
+                progress_bar.progress(100)
+                status_text.empty()
                 
                 st.success("Translation completed!")
                 st.download_button(
@@ -355,41 +383,9 @@ def show_user_interface(user_password=None):
                     mime="text/html; charset=utf-8"
                 )
                 components.html(html_content, height=800, scrolling=True)
-                
-            except Exception as e:
-                st.error(f"Interactive Translation error: {str(e)}")
-
-        else:
-            # Standard translation mode
-            progress_bar = st.progress(0)
-            status_text = st.empty()
             
-            # Gọi hàm dịch cả đoạn
-            html_content = translate_file(
-                text_input,
-                lambda p: update_progress(p, progress_bar, status_text),
-                include_english,
-                LANGUAGES[source_language],
-                LANGUAGES[target_language],
-                pinyin_style,
-                translation_mode
-            )
-            
-            # Cập nhật tiến trình
-            progress_bar.progress(100)
-            status_text.empty()
-            
-            st.success("Translation completed!")
-            st.download_button(
-                label="Download HTML",
-                data=html_content.encode('utf-8'),
-                file_name="translation.html",
-                mime="text/html; charset=utf-8"
-            )
-            components.html(html_content, height=800, scrolling=True)
-        
-    except Exception as e:
-        st.error(f"Translation error: {str(e)}")
+        except Exception as e:
+            st.error(f"Translation error: {str(e)}")
 
 
 def create_interactive_html(processed_words, pinyin_style):
@@ -417,7 +413,6 @@ def create_interactive_html(processed_words, pinyin_style):
         return html_content.replace('{{content}}', translation_content)
         
     except Exception as e:
-        # st.error(f"Error creating interactive HTML: {str(e)}")
         return None
 
 
