@@ -4,6 +4,7 @@ import json
 import re
 import time
 from google.api_core.exceptions import ResourceExhausted
+# Thư viện này cần requirements.txt có dòng 'pypinyin'
 from pypinyin import pinyin, Style 
 
 class Translator:
