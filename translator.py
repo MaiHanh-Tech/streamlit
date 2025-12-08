@@ -20,27 +20,18 @@ class Translator:
             try:
                 api_key = st.secrets["api_keys"]["gemini_api_key"]
                 genai.configure(api_key=api_key)
-                
-                # Cấu hình Model
-                try:
-                    self.model = genai.GenerativeModel('gemini-2.5-pro')
-                except:
-                    try:
-                        self.model = genai.GenerativeModel('gemini-1.5-pro')
-                    except:
-                        self.model = genai.GenerativeModel('gemini-1.5-flash')
-                        
+                # Dùng Flash cho nhanh và ít bị từ chối
+                self.model = genai.GenerativeModel('gemini-1.5-flash')
             except Exception as e:
                 st.error(f"Lỗi cấu hình API Gemini: {str(e)}")
                 self.model = None
-            self.translated_words = {}
             self.initialized = True
 
     def _run_gemini_safe(self, prompt, is_json=False):
         if not self.model: return None
         for i in range(3):
             try:
-                # Tắt bộ lọc an toàn để không bị chặn văn bản y khoa/sinh học
+                # Tắt toàn bộ bộ lọc an toàn
                 safety = [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -58,86 +49,80 @@ class Translator:
             except ResourceExhausted: 
                 time.sleep(5) 
             except Exception as e:
-                time.sleep(2)
+                time.sleep(1)
                 continue
         return None
 
     def translate_text(self, text, source_lang_code, target_lang_code, include_english):
-        """Dịch chuẩn (Standard Translation)"""
-        cache_key = f"{text}_fix3_{source_lang_code}_{target_lang_code}_{include_english}"
-        if cache_key in self.translated_words:
-            return self.translated_words[cache_key]
+        """Dịch chuẩn (Standard Translation) - KHÔNG DÙNG CACHE ĐỂ FIX LỖI"""
         
-        # Mapping tên ngôn ngữ thủ công để đảm bảo chính xác
-        LANG_MAP = {
-            'vi': 'Vietnamese', 'en': 'English', 'zh': 'Chinese', 'fr': 'French',
-            'ja': 'Japanese', 'ko': 'Korean', 'ru': 'Russian', 'es': 'Spanish'
-        }
-        # Lấy tên từ session nếu không có trong map cứng
-        target_name = LANG_MAP.get(target_lang_code, st.session_state.get('languages', {}).get(target_lang_code, target_lang_code))
-        source_name = LANG_MAP.get(source_lang_code, st.session_state.get('languages', {}).get(source_lang_code, source_lang_code))
+        # Map tên ngôn ngữ
+        lang_map = {v: k for k, v in st.session_state.get('languages', {}).items()}
+        target_lang_name = lang_map.get(target_lang_code, target_lang_code)
+        source_lang_name = lang_map.get(source_lang_code, source_lang_code)
         
         should_ask_english = include_english and target_lang_code != 'en' and source_lang_code != 'en'
         
-        # --- PROMPT KHẮC PHỤC LỖI "KHÔNG DỊCH" ---
-        base_prompt = f"""
-        ROLE: Professional Translator.
-        SOURCE LANGUAGE: {source_name}.
-        TARGET LANGUAGE: {target_name}.
+        # --- KỸ THUẬT ONE-SHOT (Mớm lời) ---
+        # Bắt AI nhìn ví dụ để hiểu nhiệm vụ
         
-        INPUT TEXT (May contain OCR errors like 'suchas', 'theoryof'):
+        example_input = "Hello world. This text has erors."
+        example_output = "Xin chào thế giới. Văn bản này có lỗi." if target_lang_code == 'vi' else "Bonjour le monde..."
+        
+        prompt = f"""
+        Translate the following text from {source_lang_name} to {target_lang_name}.
+        
+        [EXAMPLE]
+        Input: "{example_input}"
+        Output: "{example_output}"
+        [END EXAMPLE]
+        
+        [REAL TASK]
+        Input (May contain OCR errors/typos, ignore them and translate meaning): 
         "{text}"
         
-        INSTRUCTIONS:
-        1. Ignore OCR errors/typos. Guess the correct meaning.
-        2. TRANSLATE the meaning into **{target_name}**.
-        3. DO NOT output {source_name} (unless requested).
-        4. DO NOT explain the errors. Just translate.
+        Output (Translate to {target_lang_name} ONLY):
         """
 
         if should_ask_english:
-            base_prompt += f"""
-            \nOUTPUT FORMAT (Strictly 2 lines):
-            Line 1: {target_name} translation.
-            Line 2: English text (Corrected version).
-            """
-        else:
-            base_prompt += f"""
-            \nOUTPUT FORMAT:
-            Return ONLY the {target_name} translation.
-            """
-        
-        translation = self._run_gemini_safe(base_prompt)
-        
-        # Kiểm tra nếu AI trả về y nguyên văn bản gốc (Lỗi thường gặp)
-        if translation and translation.strip() == text.strip():
-             # Thử lại lần 2 với prompt gắt hơn
-             retry_prompt = f"Translate this to {target_name} immediately: {text}"
-             translation = self._run_gemini_safe(retry_prompt)
-
-        if translation:
-            self.translated_words[cache_key] = translation
-            return translation
+            prompt = f"""
+            Translate from {source_lang_name} to {target_lang_name} AND English.
             
-        return f"..."
+            Input: "{text}"
+            
+            Output Format:
+            Line 1: {target_lang_name} translation.
+            Line 2: English correction.
+            """
+        
+        # Gọi Gemini
+        translation = self._run_gemini_safe(prompt)
+        
+        # Nếu AI vẫn trả về tiếng Anh (nguyên văn), ta ép nó dịch lại lần 2
+        # So sánh độ dài để đoán xem nó có copy nguyên văn không
+        if translation and len(translation) > 0:
+            # Nếu đích là Việt mà kết quả không có dấu tiếng Việt (cơ bản) -> Nghi ngờ lỗi
+            if target_lang_code == 'vi' and not any(char in translation for char in "àáảãạăắằẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"):
+                 # Gọi lại lần 2 với lệnh gắt hơn
+                 retry_prompt = f"You failed. Translate this specific text to VIETNAMESE immediately: {text}"
+                 translation = self._run_gemini_safe(retry_prompt)
+
+        return translation if translation else "..."
 
     def process_chinese_text(self, word, target_lang_code):
-        # (Giữ nguyên phần này như cũ)
+        # (Giữ nguyên phần Pinyin)
         pinyin_text = ""
         try:
             pinyin_list = pinyin(word, style=Style.TONE)[0][0]
             pinyin_text = ' '.join(pinyin_list)
         except: pass
         
-        cache_key = f"{word}_int_v2_{target_lang_code}"
-        if cache_key in self.translated_words:
-            return self.translated_words[cache_key]
-        
-        target_name = st.session_state.get('languages', {}).get(target_lang_code, target_lang_code)
+        lang_map = {v: k for k, v in st.session_state.get('languages', {}).items()}
+        target_lang_name = lang_map.get(target_lang_code, target_lang_code)
 
         prompt = f"""
-        Analyze word: "{word}". Target: {target_name}.
-        Return JSON ARRAY: [{{ "word": "{word}", "translations": ["Meaning in {target_name}"] }}]
+        Analyze word: "{word}". Target: {target_lang_name}.
+        Return JSON ARRAY: [{{ "word": "{word}", "translations": ["Meaning"] }}]
         """
         
         data = self._run_gemini_safe(prompt, is_json=True)
@@ -147,7 +132,6 @@ class Translator:
                 'pinyin': pinyin_text,
                 'translations': data[0].get('translations', [])
             }
-            self.translated_words[cache_key] = [result]
             return [result]
         
         return [{'word': word, 'pinyin': pinyin_text, 'translations': ['...']}]
