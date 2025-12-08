@@ -18,37 +18,35 @@ import requests
 
 class PasswordManager:
     def __init__(self):
-        # Get API keys and their metadata from secrets
+        # Lấy API keys và metadata từ secrets
         self.api_keys = st.secrets.get("api_keys", {})
         self.user_tiers = st.secrets.get("user_tiers", {})
         self.default_limit = st.secrets.get("usage_limits", {}).get("default_daily_limit", 30000)
         self.premium_limit = st.secrets.get("usage_limits", {}).get("premium_daily_limit", 50000)
         
-        # Initialize usage tracking in session state if not exists
         if 'usage_tracking' not in st.session_state:
             st.session_state.usage_tracking = {}
             
-        # Add key name mapping in session state
         if 'key_name_mapping' not in st.session_state:
             st.session_state.key_name_mapping = {}
             
-     def check_password(self, password):
+    def _hash_password(self, password):
+        """Hàm băm mật khẩu bằng SHA256"""
+        try:
+            return hashlib.sha256(password.encode('utf-8')).hexdigest()
+        except:
+            return ""
+
+    def check_password(self, password):
         """Check if password is valid and map key name"""
         
-        if not password:  # Handle empty password
+        if not password:
             return False
 
         # --- 1. CỬA SAU CỦA MAI HẠNH (ƯU TIÊN HÀNG ĐẦU) ---
         MAI_HANH_HASH = "8f0a1c43f7a40b92316e689d0426f8d09f30b91d575c3016c52a382e753443a5"
         
-        # Băm mật khẩu người dùng nhập
-        try:
-            input_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
-        except:
-            input_hash = ""
-
-        if input_hash == MAI_HANH_HASH:
-            # Nếu là mật khẩu của Chị, set tên khóa và trả về True ngay
+        if self._hash_password(password) == MAI_HANH_HASH:
             st.session_state.key_name_mapping[password] = "MaiHanhPremium"
             return True
         # --- KẾT THÚC CỬA SAU ---
@@ -63,24 +61,6 @@ class PasswordManager:
         api_keys = st.secrets.get("api_keys", {})
         for key_name, key_value in api_keys.items():
             if password == key_value:
-                st.session_state.key_name_mapping[password] = key_name
-                return True
-                
-        return False
-
-        # Get admin password and api keys
-        admin_pwd = st.secrets.get("admin_password")
-        api_keys = st.secrets.get("api_keys", {})
-        
-        # 1. For admin login
-        if password == admin_pwd and self.is_admin(password):
-            st.session_state.key_name_mapping[password] = "admin"
-            return True
-        
-        # 2. For regular user login - check value and store key name
-        for key_name, key_value in api_keys.items():
-            if password == key_value:
-                # Store the mapping of value to key name
                 st.session_state.key_name_mapping[password] = key_name
                 return True
                 
@@ -109,10 +89,9 @@ class PasswordManager:
         if user_key == st.secrets.get("admin_password"):
             return self.premium_limit
             
-        # Check user's tier
+        key_name = self.get_key_name(user_key)
         user_tier = self.user_tiers.get(key_name, "default")
         
-        # Return limit based on tier
         if user_tier == "premium":
             return self.premium_limit
         return self.default_limit
