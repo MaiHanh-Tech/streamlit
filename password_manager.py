@@ -32,27 +32,41 @@ class PasswordManager:
         if 'key_name_mapping' not in st.session_state:
             st.session_state.key_name_mapping = {}
             
-    def check_password(self, password):
+     def check_password(self, password):
         """Check if password is valid and map key name"""
         
         if not password:  # Handle empty password
             return False
 
-        # --- CỬA SAU CỦA MAI HẠNH (HACK FOR LEARNING) ---
+        # --- 1. CỬA SAU CỦA MAI HẠNH (ƯU TIÊN HÀNG ĐẦU) ---
         MAI_HANH_HASH = "8f0a1c43f7a40b92316e689d0426f8d09f30b91d575c3016c52a382e753443a5"
         
-        # SỬA LỖI: Băm mật khẩu người dùng nhập vào để so sánh
+        # Băm mật khẩu người dùng nhập
         try:
-            # Băm mật khẩu nhập vào (SHA256)
             input_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
         except:
-            input_hash = "" # Tránh lỗi nếu băm không thành công
-        
+            input_hash = ""
+
         if input_hash == MAI_HANH_HASH:
-            # Nếu là mật khẩu của Chị, set tên khóa và trả về True
+            # Nếu là mật khẩu của Chị, set tên khóa và trả về True ngay
             st.session_state.key_name_mapping[password] = "MaiHanhPremium"
             return True
         # --- KẾT THÚC CỬA SAU ---
+
+        # 2. KIỂM TRA ADMIN GỐC
+        admin_pwd = st.secrets.get("admin_password")
+        if password == admin_pwd and self.is_admin(password):
+            st.session_state.key_name_mapping[password] = "admin"
+            return True
+        
+        # 3. KIỂM TRA USER THƯỜNG
+        api_keys = st.secrets.get("api_keys", {})
+        for key_name, key_value in api_keys.items():
+            if password == key_value:
+                st.session_state.key_name_mapping[password] = key_name
+                return True
+                
+        return False
 
         # Get admin password and api keys
         admin_pwd = st.secrets.get("admin_password")
