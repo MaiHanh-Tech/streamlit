@@ -1,4 +1,4 @@
-import google.generativeai as genai
+mport google.generativeai as genai
 import streamlit as st
 import json
 import re
@@ -21,11 +21,11 @@ class Translator:
                 api_key = st.secrets["api_keys"]["gemini_api_key"]
                 genai.configure(api_key=api_key)
                 
-                # Cố gắng dùng các đời Model mạnh nhất
+                # Cấu hình Model: Flash xử lý văn bản dài tốt hơn
                 try:
-                    self.model = genai.GenerativeModel('gemini-1.5-pro')
-                except:
                     self.model = genai.GenerativeModel('gemini-1.5-flash')
+                except:
+                    self.model = genai.GenerativeModel('gemini-pro')
                         
             except Exception as e:
                 st.error(f"Lỗi cấu hình API Gemini: {str(e)}")
@@ -38,7 +38,7 @@ class Translator:
         if not self.model: return None
         for i in range(3):
             try:
-                # Tắt bộ lọc an toàn
+                # Tắt bộ lọc an toàn để không bị chặn nội dung chính trị/y khoa
                 safety = [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -46,22 +46,19 @@ class Translator:
                     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
                 ]
                 
-                # Ép trả về JSON nếu cần (Gemini hỗ trợ response_mime_type nhưng dùng prompt cho an toàn mọi phiên bản)
                 response = self.model.generate_content(prompt, safety_settings=safety)
-                
                 text_res = response.text
                 
                 if is_json:
-                    # Lọc lấy phần JSON
+                    # Cố gắng làm sạch JSON
                     if "```" in text_res:
                         text_res = re.sub(r'```json|```', '', text_res).strip()
-                    # Tìm điểm bắt đầu { và kết thúc }
-                    start = text_res.find('{')
-                    end = text_res.rfind('}') + 1
-                    if start != -1 and end != -1:
-                        return json.loads(text_res[start:end])
-                    return json.loads(text_res)
-                    
+                    try:
+                        return json.loads(text_res)
+                    except json.JSONDecodeError:
+                        # Nếu lỗi JSON, trả về None để kích hoạt Fallback
+                        return None
+                        
                 return text_res
             except ResourceExhausted: 
                 time.sleep(5) 
@@ -72,12 +69,10 @@ class Translator:
 
     def translate_text(self, text, source_lang_code, target_lang_code, include_english):
         """
-        DỊCH CHUẨN - PHIÊN BẢN 'KỶ LUẬT SẮT'
-        Sử dụng JSON Mode để ép AI không được trả về văn bản gốc.
+        DỊCH CHUẨN - CƠ CHẾ BẢO HIỂM 2 LỚP
         """
-        
         # Cache key
-        cache_key = f"{text}_force_json_{source_lang_code}_{target_lang_code}_{include_english}"
+        cache_key = f"{text}_v4_{source_lang_code}_{target_lang_code}_{include_english}"
         if cache_key in self.translated_words:
             return self.translated_words[cache_key]
         
@@ -86,69 +81,68 @@ class Translator:
         target_lang_name = lang_map.get(target_lang_code, target_lang_code)
         source_lang_name = lang_map.get(source_lang_code, source_lang_code)
         
-        # Logic dịch kèm tiếng Anh
         should_ask_english = include_english and target_lang_code != 'en' and source_lang_code != 'en'
         
-        # --- PROMPT ÉP JSON ---
-        prompt = f"""
-        You are a translation API. 
-        Task: Translate the text from {source_lang_name} to {target_lang_name}.
+        # --- LỚP 1: THỬ DÙNG JSON (ĐỂ CÓ CẤU TRÚC ĐẸP) ---
+        prompt_json = f"""
+        Translate the following text from {source_lang_name} to {target_lang_name}.
+        Input: "{text}"
         
-        INPUT TEXT (Ignore OCR errors/typos like 'suchas', 'needed . y'):
-        "{text}"
-        
-        INSTRUCTIONS:
-        1. Fix formatting errors internally.
-        2. Translate the MEANING to {target_lang_name}.
-        3. RETURN JSON ONLY. NO MARKDOWN. NO EXPLANATIONS.
+        Requirements:
+        1. Keep the meaning accurate.
+        2. Keep the formatting (1. 2. 3...).
+        3. RETURN JSON ONLY.
         """
 
         if should_ask_english:
-            prompt += f"""
-            JSON FORMAT:
-            {{
-                "target_text": "Put {target_lang_name} translation here",
-                "english_text": "Put corrected English text here"
-            }}
+            prompt_json += f"""
+            JSON Format: {{ "target_text": "...", "english_text": "..." }}
             """
         else:
-            prompt += f"""
-            JSON FORMAT:
-            {{
-                "target_text": "Put {target_lang_name} translation here"
-            }}
+            prompt_json += f"""
+            JSON Format: {{ "target_text": "..." }}
             """
         
-        # Gọi Gemini với chế độ JSON
-        data = self._run_gemini_safe(prompt, is_json=True)
+        data = self._run_gemini_safe(prompt_json, is_json=True)
         
+        # Nếu Lớp 1 thành công
         if data and isinstance(data, dict):
             target_val = data.get("target_text", "")
-            
-            # Kiểm tra xem AI có 'lừa' mình trả lại tiếng Anh không
-            # Nếu đích là Việt mà kết quả không có dấu tiếng Việt -> Dịch lại
-            if target_lang_code == 'vi' and target_val and len(target_val) > 10:
-                vietnamese_chars = "àáảãạăắằẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
-                has_vn_sign = any(c in target_val for c in vietnamese_chars)
-                if not has_vn_sign and "PREFACE" not in text: # Preface có thể dịch là Loi noi dau (khong dau) nhung hiem
-                     # Fallback dịch thô
-                     return self._translate_fallback(text, target_lang_name)
+            if target_val:
+                if should_ask_english:
+                    english_val = data.get("english_text", "")
+                    result = f"{target_val}\n{english_val}"
+                else:
+                    result = target_val
+                
+                self.translated_words[cache_key] = result
+                return result
 
+        # --- LỚP 2: FALLBACK (DỊCH THÔ - NẾU JSON THẤT BẠI) ---
+        # Đây là phần cứu cánh cho đoạn văn chị vừa gửi
+        fallback_prompt = f"""
+        Translate this text directly from {source_lang_name} to {target_lang_name}.
+        Do not explain. Just translate.
+        
+        Text: "{text}"
+        """
+        
+        # Gọi dịch thô
+        fallback_res = self._run_gemini_safe(fallback_prompt, is_json=False)
+        
+        if fallback_res:
+            # Nếu cần tiếng Anh mà fallback chỉ trả về 1 cục, ta gọi thêm 1 lần nữa cho tiếng Anh
             if should_ask_english:
-                english_val = data.get("english_text", text)
-                result = f"{target_val}\n{english_val}"
+                eng_prompt = f"Translate this to English: {text}"
+                eng_res = self._run_gemini_safe(eng_prompt, is_json=False)
+                final_res = f"{fallback_res}\n{eng_res}"
+                self.translated_words[cache_key] = final_res
+                return final_res
             else:
-                result = target_val
-            
-            self.translated_words[cache_key] = result
-            return result
-            
-        return "[Error: AI did not return valid JSON translation]"
+                self.translated_words[cache_key] = fallback_res
+                return fallback_res
 
-    def _translate_fallback(self, text, target_lang_name):
-        """Phương án B: Dịch thẳng thừng nếu JSON thất bại"""
-        prompt = f"Translate this strictly to {target_lang_name}: {text}"
-        return self._run_gemini_safe(prompt)
+        return "[Lỗi: AI không phản hồi]"
 
     def process_chinese_text(self, word, target_lang_code):
         # (Giữ nguyên logic cũ)
@@ -158,7 +152,7 @@ class Translator:
             pinyin_text = ' '.join(pinyin_list)
         except: pass
         
-        cache_key = f"{word}_int_v3_{target_lang_code}"
+        cache_key = f"{word}_int_v4_{target_lang_code}"
         if cache_key in self.translated_words:
             return self.translated_words[cache_key]
         
