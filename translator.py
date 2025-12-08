@@ -7,15 +7,18 @@ class Translator:
         # --- BẢO MẬT TUYỆT ĐỐI ---
         # Không dán Key ở đây. Code sẽ tự mò vào Két sắt (st.secrets) để lấy.
         try:
-            # Lấy key từ mục [api_keys] trong secrets
-            self.api_key = st.secrets["api_keys"]["gemini_api_key"]
-            genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-2.5-flash')
-            self.is_ready = True
-        except Exception as e:
-            # Nếu không thấy Key, báo lỗi nhưng không crash app
-            print(f"Lỗi cấu hình API Key: {e}")
-            self.is_ready = False
+            # Ưu tiên Gemini 2.5 Pro
+            self.model = genai.GenerativeModel('gemini-2.5-pro')
+            self.model_name = "gemini-2.5-pro"
+        except Exception:
+            try:
+                # Trượt về Gemini 2.5 Flash
+                self.model = genai.GenerativeModel('gemini-2.5-flash')
+                self.model_name = "gemini-2.5-flash"
+            except Exception:
+                # Trượt về Gemini-Pro (Dự phòng)
+                self.model = genai.GenerativeModel('gemini-pro')
+                self.model_name = "gemini-pro"
 
     def process_chinese_text(self, word, target_lang_code="vi"):
         """Xử lý từng từ (Dùng cho Word-by-Word cũ)"""
