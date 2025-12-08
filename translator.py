@@ -1,10 +1,11 @@
-import google.generativeai as genai
 import streamlit as st
-import json
-import re
+import google.generativeai as genai
 import time
-from google.api_core.exceptions import ResourceExhausted, InvalidArgument
-from pypinyin import pinyin, Style 
+from pypinyin import pinyin, Style
+import jieba
+from datetime import datetime
+import plotly.graph_objects as go
+from google.api_core.exceptions import ResourceExhausted
 
 class Translator:
     _instance = None
@@ -16,162 +17,157 @@ class Translator:
         return cls._instance
 
     def __init__(self):
-        # --- BẢO MẬT TUYỆT ĐỐI ---
-        # Không dán Key ở đây. Code sẽ tự mò vào Két sắt (st.secrets) để lấy.
-        try:
-            # Ưu tiên Gemini 2.5 Pro
-            self.model = genai.GenerativeModel('gemini-2.5-pro')
-            self.model_name = "gemini-2.5-pro"
-        except Exception:
+        if not self.initialized:
+            # --- THAY ĐỔI: CẤU HÌNH GEMINI (THAY CHO AZURE) ---
             try:
-                # Trượt về Gemini 2.5 Flash
-                self.model = genai.GenerativeModel('gemini-2.5-flash')
-                self.model_name = "gemini-2.5-flash"
-            except Exception:
-                # Trượt về Gemini-Pro (Dự phòng)
-                self.model = genai.GenerativeModel('gemini-pro')
-                self.model_name = "gemini-pro"
-                        
+                api_key = st.secrets["api_keys"]["gemini_api_key"]
+                genai.configure(api_key=api_key)
+                
+                # Ưu tiên Flash cho nhanh (tương đương tốc độ Azure)
+                self.model = genai.GenerativeModel('gemini-1.5-flash')
             except Exception as e:
+                print(f"Gemini Init Error: {str(e)}")
                 self.model = None
-            
-            self.translated_words = {} 
+
+            # Giữ nguyên Cache
+            self.translated_words = {}
             self.initialized = True
 
-    def _run_gemini_safe(self, prompt, is_json=False):
-        if not self.model: return None
+    def translate_text(self, text, target_lang):
+        """Translate text using Gemini (Was Azure)"""
+        cache_key = f"{text}_{target_lang}"
         
-        # TẮT BỘ LỌC AN TOÀN TUYỆT ĐỐI
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-        
-        # Cấu hình sinh văn bản để tránh bị cắt cụt
-        generation_config = genai.types.GenerationConfig(
-            candidate_count=1,
-            max_output_tokens=2048,
-            temperature=0.3, # Giảm sáng tạo để dịch chính xác hơn
-        )
-
-        for i in range(3):
-            try:
-                response = self.model.generate_content(
-                    prompt, 
-                    safety_settings=safety_settings,
-                    generation_config=generation_config
-                )
-                
-                if not response.parts:
-                    return None
-                
-                text_res = response.text
-                
-                if is_json:
-                    if "```" in text_res:
-                        text_res = re.sub(r'```json|```', '', text_res).strip()
-                    try:
-                        return json.loads(text_res)
-                    except:
-                        return None 
-                        
-                return text_res
-
-            except ResourceExhausted: 
-                time.sleep(5) 
-            except Exception as e:
-                # Nếu model hiện tại lỗi, thử lại sau 1s
-                time.sleep(1)
-                continue
-        return None
-
-    def translate_text(self, text, source_lang_code, target_lang_code, include_english):
-        # Cache key
-        cache_key = f"{text}_stable_{source_lang_code}_{target_lang_code}_{include_english}"
+        # Check cache first
         if cache_key in self.translated_words:
-            return self.translated_words[cache_key]
+            translation = self.translated_words[cache_key]
+            return translation
         
-        # Map tên ngôn ngữ
-        lang_map = {v: k for k, v in st.session_state.get('languages', {}).items()}
-        target_name = lang_map.get(target_lang_code, target_lang_code)
-        
-        should_ask_english = include_english and target_lang_code != 'en' and source_lang_code != 'en'
-        
-        # --- CHIẾN THUẬT 1: JSON ---
-        prompt_json = f"""
-        Translate the following text to {target_name}.
-        Input: "{text}"
-        Instruction: Accurate translation. Return JSON ONLY.
-        """
-        if should_ask_english:
-            prompt_json += 'Format: {"target": "...", "english": "..."}'
-        else:
-            prompt_json += 'Format: {"target": "..."}'
-
-        data = self._run_gemini_safe(prompt_json, is_json=True)
-        
-        if data and isinstance(data, dict):
-            t_val = data.get("target", "")
-            if t_val:
-                if should_ask_english:
-                    e_val = data.get("english", "")
-                    res = f"{t_val}\n{e_val}"
-                else:
-                    res = t_val
-                
-                self.translated_words[cache_key] = res
-                return res
-
-        # --- CHIẾN THUẬT 2: DỊCH THÔ (CỨU CÁNH CUỐI CÙNG) ---
-        # Prompt đơn giản nhất có thể để AI không bị confuse
-        prompt_plain = f"Translate this to {target_name}: {text}"
-        res_target = self._run_gemini_safe(prompt_plain, is_json=False)
-        
-        if not res_target:
-            return f"[Lỗi kết nối AI. Vui lòng thử lại đoạn ngắn hơn]"
-
-        if should_ask_english:
-            prompt_eng = f"Translate this to English: {text}"
-            res_eng = self._run_gemini_safe(prompt_eng, is_json=False)
-            if res_eng:
-                final_res = f"{res_target}\n{res_eng}"
-            else:
-                final_res = res_target
-        else:
-            final_res = res_target
-
-        self.translated_words[cache_key] = final_res
-        return final_res
-
-    def process_chinese_text(self, word, target_lang_code):
-        pinyin_text = ""
         try:
-            pinyin_list = pinyin(word, style=Style.TONE)[0][0]
-            pinyin_text = ' '.join(pinyin_list)
-        except: pass
+            # Only call AI if not in cache
+            translation = self._call_gemini_translate(text, target_lang)  # Changed function call
+            
+            if translation:
+                self.translated_words[cache_key] = translation  # Update cache
+                return translation
+            return ""
+        except Exception as e:
+            print(f"Translation error: {str(e)}")
+            return ""
+
+    def _call_gemini_translate(self, text, target_lang):
+        """Translate text using Google Gemini API (Replaces Azure)"""
+        if not self.model: return ""
         
-        cache_key = f"{word}_int_stable_{target_lang_code}"
-        if cache_key in self.translated_words:
-            return self.translated_words[cache_key]
-        
-        lang_map = {v: k for k, v in st.session_state.get('languages', {}).items()}
-        target_name = lang_map.get(target_lang_code, target_lang_code)
+        # Map mã ngôn ngữ sang tên để Gemini hiểu tốt hơn
+        lang_map = {
+            'vi': 'Vietnamese', 'en': 'English', 'zh': 'Chinese', 
+            'fr': 'French', 'ja': 'Japanese', 'ko': 'Korean',
+            'ru': 'Russian', 'es': 'Spanish', 'th': 'Thai'
+        }
+        target_name = lang_map.get(target_lang, target_lang)
 
         prompt = f"""
-        Analyze word: "{word}". Target: {target_name}.
-        Return JSON ARRAY: [{{ "word": "{word}", "translations": ["Meaning"] }}]
+        Translate the following text to {target_name}. 
+        Output ONLY the translation. No explanations.
+        Text: "{text}"
         """
-        
-        data = self._run_gemini_safe(prompt, is_json=True)
-        if data and isinstance(data, list) and len(data) > 0:
-            result = {
-                'word': word,
-                'pinyin': pinyin_text,
-                'translations': data[0].get('translations', [])
-            }
-            self.translated_words[cache_key] = [result]
-            return [result]
-        
-        return [{'word': word, 'pinyin': pinyin_text, 'translations': ['...']}]
+
+        for i in range(3): # Retry logic
+            try:
+                response = self.model.generate_content(prompt)
+                return response.text.strip()
+            except ResourceExhausted:
+                time.sleep(2)
+            except Exception as e:
+                print(f"Gemini error: {str(e)}")
+                return ""
+        return ""
+
+    # --- ĐOẠN DƯỚI NÀY GIỮ NGUYÊN 100% NHƯ CODE GỐC CỦA CHỊ ---
+    def process_chinese_text(self, text, target_lang="en"):
+        """Process Chinese text for word-by-word translation"""
+        try:
+            # Segment the text using jieba
+            words = list(jieba.cut(text))
+            
+            # Get pinyin for each word
+            word_pinyins = []
+            for word in words:
+                try:
+                    char_pinyins = []
+                    for char in word:
+                        try:
+                            char_pinyin = pinyin(char, style=Style.TONE)[0][0]
+                            char_pinyins.append(char_pinyin)
+                        except Exception as e:
+                            print(f"Error getting pinyin for char '{char}': {str(e)}")
+                            char_pinyins.append("")
+                    word_pinyins.append(' '.join(char_pinyins))
+                except Exception as e:
+                    print(f"Error processing word '{word}' for pinyin: {str(e)}")
+                    word_pinyins.append("")
+            
+            # Get translations (Logic gọi hàm translate_text đã được trỏ sang Gemini ở trên)
+            word_translations = []
+            
+            # 使用类级别的缓存
+            cache_key = f"{word}_{target_lang}"
+            for word in words:
+                try:
+                    # Skip translation for punctuation and numbers
+                    if (len(word.strip()) == 1 and not '\u4e00' <= word <= '\u9fff') or word.isdigit():
+                        word_translations.append("")
+                        continue
+                    
+                    # 检查缓存
+                    cache_key = f"{word}_{target_lang}"
+                    if cache_key in self.translated_words:
+                        translation = self.translated_words[cache_key]
+                        # print(f"Cache hit: '{word}' -> '{translation}'")
+                    else:
+                        # Add delay between requests
+                        time.sleep(0.5)
+                        
+                        # Translate using Gemini (via wrapper)
+                        translation = self.translate_text(word, target_lang)
+                        self.translated_words[cache_key] = translation  # 更新缓存
+                        # print(f"New translation: '{word}' -> '{translation}'")
+                    
+                    if translation:
+                        word_translations.append(translation)
+                    else:
+                        word_translations.append("")
+                    
+                except Exception as e:
+                    print(f"Translation error for word '{word}': {str(e)}")
+                    word_translations.append("")
+            
+            # Combine results
+            processed_words = []
+            for i, (word, pinyin_text, translation) in enumerate(zip(words, word_pinyins, word_translations)):
+                try:
+                    if '\u4e00' <= word <= '\u9fff':
+                        processed_words.append({
+                            'word': word,
+                            'pinyin': pinyin_text,
+                            'translations': [translation] if translation else []
+                        })
+                    else:
+                        processed_words.append({
+                            'word': word,
+                            'pinyin': '',
+                            'translations': []
+                        })
+                except Exception as e:
+                    print(f"Error combining results for word at index {i}: {str(e)}")
+                    processed_words.append({
+                        'word': word,
+                        'pinyin': '',
+                        'translations': []
+                    })
+            
+            return processed_words
+            
+        except Exception as e:
+            print(f"Error processing text: {str(e)}")
+            return None
