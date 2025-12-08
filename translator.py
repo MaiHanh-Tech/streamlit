@@ -16,14 +16,21 @@ class Translator:
         return cls._instance
 
     def __init__(self):
-        if not self.initialized:
+        # --- BẢO MẬT TUYỆT ĐỐI ---
+        # Không dán Key ở đây. Code sẽ tự mò vào Két sắt (st.secrets) để lấy.
+        try:
+            # Ưu tiên Gemini 2.5 Pro
+            self.model = genai.GenerativeModel('gemini-2.5-pro')
+            self.model_name = "gemini-2.5-pro"
+        except Exception:
             try:
-                api_key = st.secrets["api_keys"]["gemini_api_key"]
-                genai.configure(api_key=api_key)
-                
-                # --- CHỐT HẠ: DÙNG GEMINI 1.5 FLASH (ỔN ĐỊNH NHẤT) ---
-                # Model 2.5 hiện tại chưa public rộng rãi API, dùng sẽ bị lỗi ngầm
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
+                # Trượt về Gemini 2.5 Flash
+                self.model = genai.GenerativeModel('gemini-2.5-flash')
+                self.model_name = "gemini-2.5-flash"
+            except Exception:
+                # Trượt về Gemini-Pro (Dự phòng)
+                self.model = genai.GenerativeModel('gemini-pro')
+                self.model_name = "gemini-pro"
                         
             except Exception as e:
                 self.model = None
