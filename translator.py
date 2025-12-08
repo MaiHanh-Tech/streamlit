@@ -1,100 +1,105 @@
 import google.generativeai as genai
 import streamlit as st
 import json
+import re
 import time
-import jieba
-from pypinyin import pinyin, Style
+from pydantic import BaseModel, Field
 from google.api_core.exceptions import ResourceExhausted
+from pypinyin import pinyin, Style 
 
+# --- 1. KHUÔN DỮ LIỆU (PYDANTIC SCHEMAS) ---
+class StandardTranslation(BaseModel):
+    # Dùng cho chế độ dịch câu/đoạn
+    target_text: str = Field(description="Bản dịch chính thức sang ngôn ngữ đích.")
+    english_text: str = Field(description="Bản dịch Tiếng Anh (hoặc văn bản gốc nếu nguồn là Anh).")
+
+class InteractiveWord(BaseModel):
+    # Dùng cho chế độ phân tích từ
+    word: str = Field(description="Từ/Cụm từ gốc (tiếng Trung).")
+    pinyin: str = Field(description="Phiên âm Pinyin có dấu thanh.")
+    translations: List[str] = Field(description="Danh sách các nghĩa của từ.")
+
+# --- 2. AGENT ENGINE (TÁI CẤU TRÚC LẠI CLASS) ---
 class Translator:
     def __init__(self):
         try:
             api_key = st.secrets["api_keys"]["gemini_api_key"]
             genai.configure(api_key=api_key)
-            # Dùng Flash cho nhanh vì ta sẽ gọi nhiều lần
             self.model = genai.GenerativeModel('gemini-1.5-flash')
-        except:
+            self.agent_map = {} # Cache cho các agent đã tạo
+        except Exception as e:
             self.model = None
-        self.translated_words = {} 
+        self.translated_words = {} # Cache kết quả
 
-    def _call_ai_raw(self, prompt):
-        """Hàm gọi AI thô sơ nhất, tắt hết bộ lọc"""
-        if not self.model: return None
-        
-        # Tắt sạch bộ lọc
-        safety = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-        
-        for i in range(3):
-            try:
-                response = self.model.generate_content(prompt, safety_settings=safety)
-                if response.text:
-                    return response.text.strip()
-            except ResourceExhausted:
-                time.sleep(2)
-            except Exception:
-                time.sleep(1)
-        return None
+    def _get_agent(self, schema: BaseModel, system_instruction: str):
+        """Lấy hoặc tạo Agent mới với schema/cấu hình cụ thể"""
+        # Tránh lỗi Circular Import với pydantic-ai
+        from pydantic_ai import Agent
 
-    def translate_text(self, text, source_lang, target_lang, include_english):
-        """
-        DỊCH RIÊNG LẺ TỪNG NGÔN NGỮ ĐỂ ĐẢM BẢO KHÔNG MẤT CHỮ
-        """
-        cache_key = f"{text}_brute_{source_lang}_{target_lang}_{include_english}"
-        if cache_key in self.translated_words:
-            return self.translated_words[cache_key]
+        key = (schema.__name__, system_instruction)
+        if key not in self.agent_map:
+            print(f"Creating new agent for {schema.__name__}")
+            # Cấu hình Gemini
+            config = genai.types.GenerateContentConfig(
+                temperature=0.1,
+                system_instruction=system_instruction
+            )
+            
+            # Khởi tạo Pydantic-AI Agent (thay cho logic gọi JSON thủ công)
+            self.agent_map[key] = Agent(
+                'google-gla:gemini-1.5-flash',
+                result_type=schema,
+                system_prompt=system_instruction,
+                # Cấu hình cụ thể
+                config=config 
+            )
+        return self.agent_map[key]
 
-        # Map tên ngôn ngữ
-        lang_map = {v: k for k, v in st.session_state.get('languages', {}).items()}
-        target_name = lang_map.get(target_lang, target_lang)
-        source_name = lang_map.get(source_lang, source_lang)
-
-        # 1. DỊCH SANG NGÔN NGỮ ĐÍCH (VD: VIỆT)
-        # Prompt cực đơn giản để AI không hiểu nhầm
-        prompt_main = f"Translate the following text from {source_name} to {target_name}: \n{text}"
-        res_main = self._call_ai_raw(prompt_main)
-        
-        if not res_main:
-            # Fallback nếu AI từ chối: Trả về chính nó (để không bị Error)
-            res_main = text 
-
-        # 2. DỊCH SANG TIẾNG ANH (NẾU CẦN)
-        res_eng = ""
-        if include_english and target_lang != 'en' and source_lang != 'en':
-            prompt_eng = f"Translate the following text from {source_name} to English: \n{text}"
-            res_eng = self._call_ai_raw(prompt_eng)
-            if not res_eng: res_eng = "..."
-
-        # 3. GHÉP KẾT QUẢ
-        if res_eng:
-            final_res = f"{res_main}\n{res_eng}"
+    def translate_standard(self, text, source_lang, target_lang, include_english):
+        """Dịch chuẩn (Sử dụng Pydantic Agent)"""
+        # Cấu hình cho Standard Mode
+        if source_lang == 'zh':
+            system_prompt = f"Bạn là dịch giả chuyên nghiệp. Dịch văn bản từ Tiếng Trung sang {target_lang}. Giữ nguyên định dạng và số thứ tự."
         else:
-            final_res = res_main
+             system_prompt = f"Bạn là dịch giả chuyên nghiệp. Dịch văn bản từ {source_lang} sang {target_lang}. Giữ nguyên định dạng và số thứ tự."
 
-        self.translated_words[cache_key] = final_res
-        return final_res
+        agent = self._get_agent(StandardTranslation, system_prompt)
+        
+        # Tạo prompt tùy biến cho Gemini
+        if include_english and target_lang != 'en' and source_lang != 'en':
+            prompt = f"Translate the text below. Target: {target_lang}. Also provide the corrected English text: \n{text}"
+        else:
+            prompt = f"Translate the text below. Target: {target_lang}. \n{text}"
+
+        try:
+            # Gọi Agent.run_sync() để lấy kết quả (tự xử lý JSON/lỗi)
+            result = agent.run_sync(prompt)
+            return result.data # Trả về đối tượng Pydantic
+
+        except Exception as e:
+            # Fallback thô
+            print(f"Pydantic Error, falling back to raw: {e}")
+            raw_prompt = f"Translate the text below to {target_lang}. Just the translation. Text: {text}"
+            raw_res = self._run_gemini_safe(raw_prompt)
+            return StandardTranslation(target_text=raw_res or "[Lỗi dịch thuật]", english_text="...").data
 
     def process_chinese_text(self, word, target_lang):
-        # (Giữ nguyên logic cũ cho phần Interactive)
-        pinyin_text = ""
+        """Phân tích từ (Sử dụng Pydantic Agent cho từ vựng)"""
+        system_prompt = "Bạn là trợ lý học tiếng Trung. Phân tích từ vựng và phiên âm."
+        agent = self._get_agent(InteractiveWord, system_prompt)
+        
         try:
-            pinyin_list = pinyin(word, style=Style.TONE)[0][0]
-            pinyin_text = ' '.join(pinyin_list)
-        except: pass
-        
-        lang_map = {v: k for k, v in st.session_state.get('languages', {}).items()}
-        target_name = lang_map.get(target_lang, target_lang)
-        
-        # Dùng hàm thô để lấy nghĩa
-        prompt = f"Translate Chinese word '{word}' to {target_name}. Just the meaning."
-        meaning = self._call_ai_raw(prompt)
-        
-        return [{
-            'word': word,
-            'pinyin': pinyin_text,
-            'translations': [meaning if meaning else "..."]
-        }]
+            result = agent.run_sync(f"Analyze the Chinese word '{word}' and translate it to {target_lang}.")
+            return [result.data] # Trả về list of objects để khớp với code cũ
+        except Exception as e:
+            return [{'word': word, 'pinyin': '', 'translations': [f"Error: {e}"]}]
+
+    def _run_gemini_safe(self, prompt):
+        # Hàm gọi thô cho fallback (giữ nguyên)
+        if not self.model: return None
+        for i in range(3):
+            try:
+                response = self.model.generate_content(prompt)
+                return response.text.strip()
+            except Exception: time.sleep(1)
+        return None
