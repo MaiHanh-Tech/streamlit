@@ -1,6 +1,7 @@
 import google.generativeai as genai
 import streamlit as st
 import json
+import re
 
 class Translator:
     def __init__(self):
@@ -20,47 +21,62 @@ class Translator:
                 self.model = genai.GenerativeModel('gemini-pro')
                 self.model_name = "gemini-pro"
 
-    def process_chinese_text(self, word, target_lang_code="vi"):
-        """Xử lý từng từ (Dùng cho Word-by-Word cũ)"""
-        if not self.is_ready:
-            return [{'word': word, 'pinyin': 'Lỗi Key', 'translation': 'Chưa nhập API Key'}]
-
-        if not word or word.strip() == "":
-            return [{'word': word, 'pinyin': '', 'translation': ''}]
-
+    def translate_standard(self, text, source_lang, target_lang):
+        """Dịch cả đoạn văn bình thường"""
+        prompt = f"""
+        Act as a professional translator.
+        Translate the following text from {source_lang} to {target_lang}.
+        Maintain the original tone and style.
+        
+        Text:
+        {text}
+        """
         try:
-            # Prompt tối ưu cho Gemini
-            prompt = f"""
-            Analyze this Chinese word: "{word}"
-            Output JSON only: {{"word": "{word}", "pinyin": "pinyin_here", "translation": "meaning_in_{target_lang_code}"}}
-            """
             response = self.model.generate_content(prompt)
-            clean_json = response.text.replace("```json", "").replace("```", "").strip()
-            return [json.loads(clean_json)]
-        except:
-            return [{'word': word, 'pinyin': '', 'translation': '...'}]
+            return response.text
+        except Exception as e:
+            return f"Error: {str(e)}"
 
-    def analyze_paragraph(self, text, target_lang="Vietnamese"):
+    def analyze_paragraph(self, text, source_lang, target_lang):
+        """Phân tích từng từ (Interactive Mode)"""
+        
+        # Nếu là tiếng Trung thì cần Pinyin, nếu không thì cần IPA hoặc để trống
+        extra_instruction = ""
+        if "Chinese" in source_lang or "Trung" in source_lang:
+            extra_instruction = "Include 'pinyin' key for pronunciation."
+        elif "English" in source_lang or "Anh" in source_lang:
+            extra_instruction = "Include 'pinyin' key, but put IPA pronunciation there."
+        else:
+            extra_instruction = "Include 'pinyin' key, but leave it empty string."
+
+        prompt = f"""
+        Analyze the following text for language learners.
+        Source Language: {source_lang}
+        Target Language: {target_lang}
+        
+        Task: Break down the text into meaningful words/phrases.
+        
+        Return a JSON array of objects. Each object must have:
+        - "word": The original word/phrase.
+        - "pinyin": {extra_instruction}
+        - "translation": Meaning in {target_lang}.
+        
+        Text: "{text}"
+        
+        Return ONLY valid JSON. No markdown formatting.
+        Example format: [{{"word": "Hello", "pinyin": "/həˈləʊ/", "translation": "Xin chào"}}]
         """
-        Hàm mới: Xử lý cả đoạn văn (Dùng cho logic mới trong app.py)
-        Trả về JSON list các từ đã cắt và dịch.
-        """
-        if not self.is_ready: return []
         
         try:
-            prompt = f"""
-            Phân tích đoạn văn tiếng Trung: "{text}"
-            Dịch sang: {target_lang}
-            
-            Yêu cầu:
-            1. Cắt từ (Segmentation).
-            2. Thêm Pinyin.
-            3. Dịch nghĩa từng từ.
-            4. Trả về JSON List: [{{ "word": "...", "pinyin": "...", "translation": "..." }}]
-            """
             response = self.model.generate_content(prompt)
-            clean_json = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_json)
+            cleaned_text = response.text.strip()
+            # Xóa các ký tự markdown nếu AI lỡ thêm vào
+            if "```json" in cleaned_text:
+                cleaned_text = re.search(r'```json\s*(\[.*?\])\s*```', cleaned_text, re.DOTALL).group(1)
+            elif "```" in cleaned_text:
+                cleaned_text = cleaned_text.replace("```", "")
+                
+            return json.loads(cleaned_text)
         except Exception as e:
-            print(f"Gemini Error: {e}")
+            st.error(f"AI Error: {e}")
             return []
