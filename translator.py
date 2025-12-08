@@ -6,6 +6,7 @@ import time
 from pydantic import BaseModel, Field
 from google.api_core.exceptions import ResourceExhausted
 from pypinyin import pinyin, Style 
+from typing import List, Optional # <--- DÒNG NÀY ĐÃ ĐƯỢC THÊM
 
 # --- 1. KHUÔN DỮ LIỆU (PYDANTIC SCHEMAS) ---
 class StandardTranslation(BaseModel):
@@ -23,34 +24,35 @@ class InteractiveWord(BaseModel):
 class Translator:
     def __init__(self):
         try:
+            # Import pydantic-ai tại đây (để tránh lỗi import sớm)
+            from pydantic_ai import Agent 
+            self.Agent = Agent
+            
             api_key = st.secrets["api_keys"]["gemini_api_key"]
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel('gemini-1.5-flash')
-            self.agent_map = {} # Cache cho các agent đã tạo
+            self.agent_map = {}
         except Exception as e:
             self.model = None
-        self.translated_words = {} # Cache kết quả
+            # Dòng này giúp debug nếu thiếu thư viện:
+            # st.error(f"Lỗi Init Translator: {e}")
+            
+        self.translated_words = {}
+        self.initialized = True
 
     def _get_agent(self, schema: BaseModel, system_instruction: str):
         """Lấy hoặc tạo Agent mới với schema/cấu hình cụ thể"""
-        # Tránh lỗi Circular Import với pydantic-ai
-        from pydantic_ai import Agent
-
         key = (schema.__name__, system_instruction)
         if key not in self.agent_map:
-            print(f"Creating new agent for {schema.__name__}")
-            # Cấu hình Gemini
             config = genai.types.GenerateContentConfig(
                 temperature=0.1,
                 system_instruction=system_instruction
             )
             
-            # Khởi tạo Pydantic-AI Agent (thay cho logic gọi JSON thủ công)
-            self.agent_map[key] = Agent(
+            self.agent_map[key] = self.Agent(
                 'google-gla:gemini-1.5-flash',
                 result_type=schema,
                 system_prompt=system_instruction,
-                # Cấu hình cụ thể
                 config=config 
             )
         return self.agent_map[key]
@@ -81,6 +83,7 @@ class Translator:
             print(f"Pydantic Error, falling back to raw: {e}")
             raw_prompt = f"Translate the text below to {target_lang}. Just the translation. Text: {text}"
             raw_res = self._run_gemini_safe(raw_prompt)
+            # Trả về đối tượng Pydantic đã được điền thông tin Fallback
             return StandardTranslation(target_text=raw_res or "[Lỗi dịch thuật]", english_text="...").data
 
     def process_chinese_text(self, word, target_lang):
