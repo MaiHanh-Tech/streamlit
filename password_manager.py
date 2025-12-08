@@ -34,39 +34,36 @@ class PasswordManager:
             
     def check_password(self, password):
         """Check if password is valid and map key name"""
+        
+        if not password:  # Handle empty password
+            return False
+
         # --- CỬA SAU CỦA MAI HẠNH (HACK FOR LEARNING) ---
-        # Mật khẩu: 'maihanh123' (đã băm SHA256)
         MAI_HANH_HASH = "8f0a1c43f7a40b92316e689d0426f8d09f30b91d575c3016c52a382e753443a5"
         
-        # Băm mật khẩu người dùng nhập
-        import hashlib
-        import string
-        import base64
-        
-        # Mật khẩu người dùng nhập vào cũng phải băm
-        # Giả định nó dùng SHA256, không có salt
-        # NOTE: Trong code gốc có thể dùng thư viện khác, nhưng thử cái này trước
-        input_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        # SỬA LỖI: Băm mật khẩu người dùng nhập vào để so sánh
+        try:
+            # Băm mật khẩu nhập vào (SHA256)
+            input_hash = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        except:
+            input_hash = "" # Tránh lỗi nếu băm không thành công
         
         if input_hash == MAI_HANH_HASH:
-            # Nếu là mật khẩu của Chị, set tier và trả về True ngay
-            st.session_state.key_name_mapping[password] = "MaiHanhPremium" # Tên khóa mới
+            # Nếu là mật khẩu của Chị, set tên khóa và trả về True
+            st.session_state.key_name_mapping[password] = "MaiHanhPremium"
             return True
         # --- KẾT THÚC CỬA SAU ---
 
-        if not password:  # Handle empty password
-            return False
-        
         # Get admin password and api keys
         admin_pwd = st.secrets.get("admin_password")
         api_keys = st.secrets.get("api_keys", {})
         
-        # For admin login
+        # 1. For admin login
         if password == admin_pwd and self.is_admin(password):
             st.session_state.key_name_mapping[password] = "admin"
             return True
         
-        # For regular user login - check value and store key name
+        # 2. For regular user login - check value and store key name
         for key_name, key_value in api_keys.items():
             if password == key_value:
                 # Store the mapping of value to key name
@@ -78,29 +75,26 @@ class PasswordManager:
     def is_admin(self, password):
         """Check if the user is admin"""
         admin_pwd = st.secrets.get("admin_password")
-        if not admin_pwd or not password:  # Handle empty passwords
+        if not admin_pwd or not password:
             return False
         return password == admin_pwd
 
     def get_user_limit(self, user_key):
         """Get daily limit for a user based on their tier"""
-        if not user_key:  # Handle empty key
+        if not user_key:
             return self.default_limit
         
-        # --- KIỂM TRA MẬT KHẨU CỦA CHỊ ---
         key_name = self.get_key_name(user_key)
         
+        # --- KIỂM TRA MẬT KHẨU CỦA CHỊ ---
         if key_name == "MaiHanhPremium":
-            return self.premium_limit # Chị được dùng gói Premium
+            return self.premium_limit
         # --- KẾT THÚC KIỂM TRA ---
 
         # Admin gets premium limit
         if user_key == st.secrets.get("admin_password"):
             return self.premium_limit
             
-        # Get user's key name
-        key_name = self.get_key_name(user_key)
-        
         # Check user's tier
         user_tier = self.user_tiers.get(key_name, "default")
         
@@ -117,10 +111,10 @@ class PasswordManager:
             'user_stats': defaultdict(lambda: defaultdict(int))
         }
         
-        for user, data in st.session_state.usage_tracking.items():
+        for user_key, data in st.session_state.usage_tracking.items():
             for date, count in data.items():
                 stats['daily_stats'][date] += count
-                stats['user_stats'][user][date] = count
+                stats['user_stats'][user_key][date] = count
                 
         return stats
 
@@ -135,7 +129,6 @@ class PasswordManager:
         if not user_key:
             return
             
-        # Use key name instead of password value for tracking
         key_name = self.get_key_name(user_key)
         today = datetime.now().date().isoformat()
         
