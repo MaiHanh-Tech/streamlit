@@ -61,7 +61,6 @@ def count_characters(text, include_english=True, target_language=None):
     text = text.replace(" ", "").replace("\n", "")
     char_count = len(text)
     
-    # Logic cũ: Nếu dịch sang ngôn ngữ khác ngoài Anh, và include English, thì tính gấp đôi.
     if include_english and target_language and target_language != "English":
         char_count *= 2
         
@@ -75,7 +74,7 @@ def update_progress(progress, progress_bar, status_text):
 
 
 def create_interactive_html(processed_words, pinyin_style):
-    """Create HTML content for interactive translation (Đã chuyển lên đây)"""
+    """Create HTML content for interactive translation"""
     try:
         # Giả định template.html tồn tại
         with open('template.html', 'r', encoding='utf-8') as template_file:
@@ -84,7 +83,7 @@ def create_interactive_html(processed_words, pinyin_style):
         if processed_words is None:
             raise ValueError("processed_words cannot be None")
             
-        # Import lại hàm tạo HTML từ translate_book (nếu cần)
+        # Import lại hàm tạo HTML từ translate_book
         from translate_book import create_interactive_html_block
         
         # Create translation content
@@ -137,7 +136,7 @@ def show_user_interface(user_password=None):
         help="Standard Translation: Full sentence translation with pinyin\nInteractive Word-by-Word: Click on individual words to see translations and hear pronunciation"
     )
 
-    # --- KHỐI CHỌN NGÔN NGỮ NGUỒN VÀ ĐÍCH (ĐÃ SỬA) ---
+    # --- KHỐI CHỌN NGÔN NGỮ NGUỒN VÀ ĐÍCH ---
     st.subheader("Select Languages")
     
     col_lang1, col_lang2, col_opt = st.columns([1, 1, 1])
@@ -145,7 +144,6 @@ def show_user_interface(user_password=None):
     languages_list = list(LANGUAGES.keys())
     
     with col_lang1:
-        # Nút chọn Ngôn ngữ Nguồn (Source)
         source_language = st.selectbox(
             "Source Language (Nguồn):",
             options=languages_list,
@@ -154,7 +152,6 @@ def show_user_interface(user_password=None):
         )
 
     with col_lang2:
-        # Nút chọn Ngôn ngữ Đích (Target)
         target_language = st.selectbox(
             "Target Language (Đích):",
             options=languages_list,
@@ -163,7 +160,6 @@ def show_user_interface(user_password=None):
         )
         
     with col_opt:
-        # Lấy lại include_english (Dùng cho logic tính quota và prompt AI)
         include_english = st.checkbox(
             "Include English Translation", 
             value=True,
@@ -373,8 +369,8 @@ def show_user_interface(user_password=None):
                 text_input,
                 lambda p: update_progress(p, progress_bar, status_text),
                 include_english,
-                LANGUAGES[source_language], # Đã sửa
-                LANGUAGES[target_language], # Đã sửa
+                LANGUAGES[source_language],
+                LANGUAGES[target_language],
                 pinyin_style,
                 translation_mode
             )
@@ -397,7 +393,7 @@ def show_user_interface(user_password=None):
 
 
 def create_interactive_html(processed_words, pinyin_style):
-    """Create HTML content for interactive translation (Đã chuyển lên đây)"""
+    """Create HTML content for interactive translation"""
     try:
         # Giả định template.html tồn tại
         with open('template.html', 'r', encoding='utf-8') as template_file:
