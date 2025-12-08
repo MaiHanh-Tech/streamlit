@@ -458,23 +458,28 @@ def main():
 
     # Check if user is already logged in
     if not st.session_state.get('user_logged_in', False):
+        # Try to login with URL key if present
         if url_key and init_password_manager():
-            if pm.check_password(url_key) and not pm.is_admin(url_key):
+            if pm.check_password(url_key):
                 st.session_state.user_logged_in = True
                 st.session_state.current_user = url_key
-                st.session_state.is_admin = False
+                # Admin/MaiHanhPremium không được set is_admin ở đây, mà set sau khi check_password
+                st.session_state.is_admin = pm.is_admin(url_key) 
                 st.rerun()
             else:
                 st.error("Invalid access key in URL")
                 
+        # Show regular login form if no URL key or invalid URL key
         st.title("Chinese Text Translator")
         user_password = st.text_input("Enter your access key", type="password", key="user_key")
         if st.button("Login"):
             if init_password_manager():
-                if pm.check_password(user_password) and not pm.is_admin(user_password):
+                # CHỈ CẦN KIỂM TRA MẬT KHẨU CÓ HỢP LỆ HAY KHÔNG
+                if pm.check_password(user_password):
                     st.session_state.user_logged_in = True
                     st.session_state.current_user = user_password
-                    st.session_state.is_admin = False
+                    # Dùng is_admin để xác định có vào Admin Dashboard không
+                    st.session_state.is_admin = pm.is_admin(user_password) 
                     st.rerun()
                 else:
                     st.error("Invalid access key")
