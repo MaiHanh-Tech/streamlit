@@ -74,6 +74,35 @@ def update_progress(progress, progress_bar, status_text):
     status_text.text(f"Processing... {progress:.1f}% completed")
 
 
+def create_interactive_html(processed_words, pinyin_style):
+    """Create HTML content for interactive translation (Đã chuyển lên đây)"""
+    try:
+        # Giả định template.html tồn tại
+        with open('template.html', 'r', encoding='utf-8') as template_file:
+            html_content = template_file.read()
+        
+        if processed_words is None:
+            raise ValueError("processed_words cannot be None")
+            
+        # Import lại hàm tạo HTML từ translate_book (nếu cần)
+        from translate_book import create_interactive_html_block
+        
+        # Create translation content
+        translation_content = create_interactive_html_block(
+            (None, [word for word in processed_words if word is not None]), 
+            True 
+        )
+            
+        if translation_content is None:
+            raise ValueError("Failed to generate translation content")
+            
+        return html_content.replace('{{content}}', translation_content)
+        
+    except Exception as e:
+        # st.error(f"Error creating interactive HTML: {str(e)}")
+        return None
+
+
 def show_user_interface(user_password=None):
     if not init_password_manager():
         return
@@ -365,6 +394,35 @@ def show_user_interface(user_password=None):
         
     except Exception as e:
         st.error(f"Translation error: {str(e)}")
+
+
+def create_interactive_html(processed_words, pinyin_style):
+    """Create HTML content for interactive translation (Đã chuyển lên đây)"""
+    try:
+        # Giả định template.html tồn tại
+        with open('template.html', 'r', encoding='utf-8') as template_file:
+            html_content = template_file.read()
+        
+        if processed_words is None:
+            raise ValueError("processed_words cannot be None")
+            
+        # Import lại hàm tạo HTML từ translate_book
+        from translate_book import create_interactive_html_block
+        
+        # Create translation content
+        translation_content = create_interactive_html_block(
+            (None, [word for word in processed_words if word is not None]), 
+            True 
+        )
+            
+        if translation_content is None:
+            raise ValueError("Failed to generate translation content")
+            
+        return html_content.replace('{{content}}', translation_content)
+        
+    except Exception as e:
+        # st.error(f"Error creating interactive HTML: {str(e)}")
+        return None
 
 
 def show_admin_interface(admin_password):
