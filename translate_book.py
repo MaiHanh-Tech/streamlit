@@ -11,17 +11,15 @@ import random
 import jieba
 import streamlit as st
 
+# Import Translator class để type hinting hoặc khởi tạo nếu cần
+from translator import Translator
 
 def split_sentence(text: str) -> List[str]:
     """Split text into sentences or meaningful chunks"""
-    # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text.strip())
-
-    # Pattern considering quotes and punctuation
     pattern = r'([。！？，：；.!?,][」"』\'）)]*(?:\s*[「""『\'（(]*)?)'
     splits = re.split(pattern, text)
 
-    # Merge chunks
     chunks = []
     current_chunk = ""
     min_length = 20
@@ -30,9 +28,7 @@ def split_sentence(text: str) -> List[str]:
     for i in range(0, len(splits)-1, 2):
         if splits[i]:
             chunk = splits[i] + (splits[i+1] if i+1 < len(splits) else '')
-
-            quote_count += chunk.count('"') + \
-                chunk.count('"') + chunk.count('"')
+            quote_count += chunk.count('"') + chunk.count('"') + chunk.count('"')
             quote_count += chunk.count('「') + chunk.count('」')
             quote_count += chunk.count('『') + chunk.count('』')
 
@@ -57,13 +53,12 @@ def split_sentence(text: str) -> List[str]:
 
 
 def convert_to_pinyin(text: str, style: str = 'tone_marks') -> str:
-    """Convert Chinese text to pinyin with specified style"""
+    """Convert Chinese text to pinyin"""
     try:
         if style == 'tone_numbers':
             pinyin_style = pypinyin.TONE3
         else:
             pinyin_style = pypinyin.TONE
-
         pinyin_list = pypinyin.pinyin(text, style=pinyin_style)
         return ' '.join([item[0] for item in pinyin_list])
     except Exception as e:
@@ -71,47 +66,48 @@ def convert_to_pinyin(text: str, style: str = 'tone_marks') -> str:
         return "[Pinyin Error]"
 
 
-def translate_text(text, target_lang):
-    """Translate text using the initialized Translator"""
-    if 'translator' not in st.session_state:
-        from translator import Translator
-        st.session_state.translator = Translator()
-    
+# --- SỬA ĐỔI QUAN TRỌNG: Hàm này nhận translator instance trực tiếp ---
+def translate_text_with_instance(text: str, target_lang: str, translator_instance) -> str:
+    """Translate using a passed translator instance (Thread-safe way)"""
     try:
-        translation = st.session_state.translator.translate_text(text, target_lang)
-        return translation
+        # Gọi trực tiếp instance được truyền vào, không qua st.session_state
+        return translator_instance.translate_text(text, target_lang)
     except Exception as e:
-        print(f"Translation error: {str(e)}")
+        print(f"Translation error for '{text}': {str(e)}")
         return ""
 
 
-def process_chunk(chunk: str, index: int, executor: ThreadPoolExecutor, include_english: bool, second_language: str, pinyin_style: str = 'tone_marks') -> tuple:
+# --- SỬA ĐỔI QUAN TRỌNG: Nhận translator từ bên ngoài ---
+def process_chunk(chunk: str, index: int, translator_instance, include_english: bool, second_language: str, pinyin_style: str = 'tone_marks') -> tuple:
     try:
-        # Get pinyin
+        # 1. Pinyin
         pinyin = convert_to_pinyin(chunk, pinyin_style)
 
-        # Get translations
+        # 2. Translation
         translations = []
         
-        # --- FIX: Always append to translations list even if result is empty ---
-        # This prevents the "expected 5, got 3" error
-        
+        # English
         if include_english:
-            english = translate_text(chunk, 'en')
-            # Use empty string if None, don't skip appending
+            if translator_instance:
+                english = translate_text_with_instance(chunk, 'en', translator_instance)
+            else:
+                english = ""
             translations.append(english if english else "")
 
-        second_trans = translate_text(chunk, second_language)
-        # Use empty string if None, don't skip appending
+        # Second Language (Vietnamese, etc.)
+        if translator_instance:
+            second_trans = translate_text_with_instance(chunk, second_language, translator_instance)
+        else:
+            second_trans = ""
         translations.append(second_trans if second_trans else "")
 
         return (index, chunk, pinyin, *translations)
 
     except Exception as e:
         print(f"\nError processing chunk {index}: {e}")
-        # Ensure we return the correct number of error placeholders
+        # Return placeholders on error
         error_count = 1 + (1 if include_english else 0)
-        error_translations = ["[Error]"] * error_count
+        error_translations = [""] * error_count
         return (index, chunk, "[Pinyin Error]", *error_translations)
 
 
@@ -124,8 +120,15 @@ def create_html_block(results: tuple, include_english: bool) -> str:
         </button>
     '''
     
+    # Unpack safely
     if include_english:
-        index, chunk, pinyin, english, second = results
+        if len(results) >= 5:
+            index, chunk, pinyin, english, second = results
+        else:
+            # Fallback safe unpack
+            index, chunk, pinyin = results[0], results[1], results[2]
+            english, second = "", ""
+            
         return f'''
             <div class="sentence-part responsive">
                 <div class="original">{index + 1}. {chunk}{speak_button}</div>
@@ -135,7 +138,13 @@ def create_html_block(results: tuple, include_english: bool) -> str:
             </div>
         '''
     else:
-        index, chunk, pinyin, second = results
+        if len(results) >= 4:
+            index, chunk, pinyin, second = results
+        else:
+             # Fallback safe unpack
+            index, chunk, pinyin = results[0], results[1], results[2]
+            second = ""
+
         return f'''
             <div class="sentence-part responsive">
                 <div class="original">{index + 1}. {chunk}{speak_button}</div>
@@ -143,24 +152,6 @@ def create_html_block(results: tuple, include_english: bool) -> str:
                 <div class="second-language">{second}</div>
             </div>
         '''
-
-
-def process_interactive_chunk(chunk: str, index: int, executor: ThreadPoolExecutor, include_english: bool, second_language: str, pinyin_style: str = 'tone_marks') -> tuple:
-    """Process chunk for interactive word-by-word translation"""
-    try:
-        if 'translator' not in st.session_state:
-            from translator import Translator
-            st.session_state.translator = Translator()
-        
-        processed_words = st.session_state.translator.process_chinese_text(chunk, second_language)
-        if not processed_words:
-            return (index, chunk, [])
-            
-        return (index, chunk, processed_words)
-
-    except Exception as e:
-        print(f"\nError processing interactive chunk {index}: {str(e)}")
-        return (index, chunk, [])
 
 
 def create_interactive_html_block(results: tuple, include_english: bool) -> str:
@@ -173,7 +164,6 @@ def create_interactive_html_block(results: tuple, include_english: bool) -> str:
     paragraphs = []
     
     for word in word_data:
-        # Handle dict or Pydantic model dump (both are dicts)
         if isinstance(word, dict) and word.get('word') == '\n':
             if current_paragraph:
                 paragraphs.append(current_paragraph)
@@ -210,56 +200,77 @@ def translate_file(input_text: str, progress_callback=None, include_english=True
     try:
         text = input_text.strip()
         
+        # --- SỬA ĐỔI QUAN TRỌNG: Lấy translator instance ở Luồng Chính (Main Thread) ---
+        translator_instance = None
+        if 'translator' in st.session_state:
+            translator_instance = st.session_state.translator
+        else:
+            # Fallback init if not found (hiếm khi xảy ra nếu đã init ở app.py)
+            translator_instance = Translator()
+        # -------------------------------------------------------------------------------
+
         if translation_mode == "Interactive Word-by-Word" and processed_words:
             with open('template.html', 'r', encoding='utf-8') as template_file:
                 html_content = template_file.read()
             
-            if progress_callback:
-                progress_callback(0)
+            if progress_callback: progress_callback(0)
             
             translation_content = create_interactive_html_block(
                 (text, processed_words),
                 include_english
             )
             
-            if progress_callback:
-                progress_callback(100)
-                
+            if progress_callback: progress_callback(100)
             return html_content.replace('{{content}}', translation_content)
+        
         else:
             # Standard translation mode
             chunks = split_sentence(text)
             total_chunks = len(chunks)
             chunks_processed = 0
-
             translation_content = ""
             
             if progress_callback:
                 progress_callback(0)
-                print(f"Total chunks: {total_chunks}")
 
-            # Using ThreadPoolExecutor locally in this block for standard translation if needed
-            # but simpler to run sequentially or reuse logic.
-            # Here we keep it simple calling process_chunk
-            
-            for chunk in chunks:
-                result = process_chunk(
-                    chunk, chunks_processed, None, 
-                    include_english, second_language, pinyin_style
-                )
+            # Sử dụng ThreadPoolExecutor
+            # Lưu ý: Cần truyền translator_instance vào process_chunk
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = []
+                for i, chunk in enumerate(chunks):
+                    future = executor.submit(
+                        process_chunk,
+                        chunk, 
+                        i, 
+                        translator_instance,  # Truyền instance vào đây
+                        include_english, 
+                        second_language, 
+                        pinyin_style
+                    )
+                    futures.append(future)
                 
-                translation_content += create_html_block(result, include_english)
+                # Collect results in order
+                results = []
+                for future in as_completed(futures):
+                    try:
+                        res = future.result()
+                        results.append(res)
+                        chunks_processed += 1
+                        if progress_callback:
+                            prog = min(100, (chunks_processed / total_chunks) * 100)
+                            progress_callback(prog)
+                    except Exception as e:
+                        print(f"Worker error: {e}")
+
+                # Sort results by index to maintain order
+                results.sort(key=lambda x: x[0])
                 
-                chunks_processed += 1
-                if progress_callback:
-                    current_progress = min(100, (chunks_processed / total_chunks) * 100)
-                    progress_callback(current_progress)
+                # Build HTML
+                for res in results:
+                    translation_content += create_html_block(res, include_english)
 
             with open('template.html', 'r', encoding='utf-8') as template_file:
                 html_content = template_file.read()
-                
-            if progress_callback:
-                progress_callback(100)
                 
             return html_content.replace('{{content}}', translation_content)
 
@@ -273,12 +284,9 @@ def main():
         sys.exit(1)
 
     input_file = sys.argv[1]
-    if not os.path.exists(input_file):
-        print(f"Error: File '{input_file}' not found")
-        sys.exit(1)
-
-    print(translate_file(open(input_file, 'r', encoding='utf-8').read()))
-
+    # Note: main() command line usage might fail with st.session_state, 
+    # but the web app uses translate_file directly.
+    pass
 
 if __name__ == "__main__":
     main()
