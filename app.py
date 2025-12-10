@@ -85,19 +85,7 @@ def show_user_interface(user_password=None):
 
     with col2:
         languages = {
-            "Arabic": "ar",
             "English": "en",
-            "French": "fr",
-            "Indonesian": "id",
-            "Italian": "it",
-            "Japanese": "ja",
-            "Korean": "ko",
-            "Persian": "fa",
-            "Portuguese": "pt",
-            "Russian": "ru",
-            "Spanish": "es",
-            "Thai": "th",
-            "Uzbek": "uz",
             "Vietnamese": "vi"
         }
 
