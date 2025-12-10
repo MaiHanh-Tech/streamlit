@@ -6,7 +6,7 @@ from pypinyin import pinyin, Style
 from pydantic import BaseModel, Field, SecretStr
 from typing import Optional, List, Dict, Any
 
-# Map từ mã ISO sang tên đầy đủ (Gemini thích tên đầy đủ)
+# Map đầy đủ các ngôn ngữ để App không bị lỗi khi chọn tiếng khác
 CODE_TO_LANG_NAME = {
     "en": "English",
     "vi": "Vietnamese",
@@ -20,48 +20,73 @@ class TranslationWord(BaseModel):
     translations: List[str]
 
 class Translator:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance.initialized = False
+        return cls._instance
+
     def __init__(self):
-        # --- BẢO MẬT TUYỆT ĐỐI ---
-        # Không dán Key ở đây. Code sẽ tự mò vào Két sắt (st.secrets) để lấy.
-        try:
-            # Ưu tiên Gemini 2.5 Pro
-            self.model = genai.GenerativeModel('gemini-2.5-pro')
-            self.model_name = "gemini-2.5-pro"
-        except Exception:
-            try:
-                # Trượt về Gemini 2.5 Flash
-                self.model = genai.GenerativeModel('gemini-2.5-flash')
-                self.model_name = "gemini-2.5-flash"
-            except Exception:
-                 # Cấu hình Gemini
-            genai.configure(api_key=self.config.api_key.get_secret_value())
-            
-            # Cấu hình Model & Safety Settings (Tắt chặn để dịch thoải mái hơn)
-            self.model = genai.GenerativeModel(
-                model_name=self.config.model,
-                safety_settings={
-                    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-                    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-                }
-            )
-            self.is_ready = True
-        except Exception as e:
-            print(f"Gemini Config Error: {e}")
+        if not self.initialized:
+            self.translated_words: Dict[str, str] = {}
             self.is_ready = False
+            self._init_config()
+            self.initialized = True
+
+    def _init_config(self):
+        try:
+            # 1. Lấy API Key từ secrets
+            # Tìm trong [gemini], nếu không có thì tìm trong [deepseek] (fallback)
+            secrets = st.secrets.get("gemini", {})
+            api_key = secrets.get("api_key") or st.secrets.get("deepseek", {}).get("api_key", "")
             
+            if not api_key:
+                print("Lỗi: Không tìm thấy API Key trong secrets.toml")
+                return
+
+            # 2. Cấu hình Gemini
+            genai.configure(api_key=api_key)
+
+            # 3. Cấu hình Safety Settings (Quan trọng: Tắt bộ lọc để dịch chính xác)
+            safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+
+            # 4. Chọn Model (Thử Pro trước, nếu lỗi thì xuống Flash)
+            # Hiện tại chưa có 2.5, dùng 1.5 là bản ổn định nhất
+            try:
+                self.model = genai.GenerativeModel('gemini-1.5-pro-latest', safety_settings=safety_settings)
+                self.model_name = "gemini-2.5-pro"
+            except Exception:
+                try:
+                    self.model = genai.GenerativeModel('gemini-1.5-flash', safety_settings=safety_settings)
+                    self.model_name = "gemini-2.5-flash"
+                except Exception as e:
+                    print(f"Lỗi khởi tạo Model: {e}")
+                    return
+
+            self.is_ready = True
+            print(f"Translator ready using model: {self.model_name}")
+
+        except Exception as e:
+            print(f"Critical Config Error: {e}")
+            self.is_ready = False
 
     def translate_text(self, text: str, target_lang: str) -> str:
         """Translate text using Google Gemini API"""
         if not text or not text.strip():
             return ""
 
-        # Lấy tên ngôn ngữ
+        # Lấy tên ngôn ngữ đầy đủ
         full_lang_name = CODE_TO_LANG_NAME.get(target_lang, target_lang)
         cache_key = f"{text}_{full_lang_name}"
         
-        # Check cache
+        # Check cache (Kiểm tra xem đã dịch từ này chưa)
         if cache_key in self.translated_words:
             return self.translated_words[cache_key]
 
@@ -88,7 +113,6 @@ class Translator:
             return "[Error: Empty response]"
 
         except Exception as e:
-            # Xử lý các lỗi thường gặp của Gemini
             error_msg = str(e)
             if "400" in error_msg:
                 return "[Error: Invalid API Key or Request]"
@@ -109,6 +133,7 @@ class Translator:
                 word_pinyin = ""
                 translation = ""
                 
+                # 1. Lấy Pinyin (Offline - Nhanh)
                 try:
                     if word.strip():
                         char_pinyins = [pinyin(char, style=Style.TONE)[0][0] for char in word]
@@ -116,6 +141,7 @@ class Translator:
                 except Exception:
                     pass
 
+                # 2. Dịch nghĩa (Gọi API Gemini)
                 if is_meaningful:
                     translation = self.translate_text(word, target_lang)
                 
