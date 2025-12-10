@@ -60,7 +60,7 @@ class Translator:
             # 4. Chọn Model (Thử Pro trước, nếu lỗi thì xuống Flash)
             # Hiện tại chưa có 2.5, dùng 1.5 là bản ổn định nhất
             try:
-                self.model = genai.GenerativeModel('gemini-2.5-pro-latest', safety_settings=safety_settings)
+                self.model = genai.GenerativeModel('gemini-2.5-pro', safety_settings=safety_settings)
                 self.model_name = "gemini-2.5-pro"
             except Exception:
                 try:
