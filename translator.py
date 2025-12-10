@@ -6,6 +6,15 @@ from openai import OpenAI
 from pydantic import BaseModel, Field, SecretStr
 from typing import Optional, List, Dict, Any
 
+# --- Constants: Language Code Mapping ---
+# Map từ mã ISO (vi, en) sang tên đầy đủ để AI hiểu rõ hơn
+CODE_TO_LANG_NAME = {
+    "en": "English",
+    "vi": "Vietnamese",
+    "zh": "Chinese",
+    "zh-Hans": "Chinese (Simplified)"
+}
+
 # --- Pydantic Models for Configuration & Data ---
 
 class DeepSeekConfig(BaseModel):
@@ -41,8 +50,7 @@ class Translator:
             # Lấy config từ secrets.toml
             secrets = st.secrets.get("deepseek", {})
             
-            # Fallback cho trường hợp người dùng cũ vẫn để tên key là azure_translator nhưng muốn dùng deepseek
-            # Hoặc tạo config mới
+            # Fallback cho trường hợp người dùng cũ
             api_key = secrets.get("api_key") or st.secrets.get("azure_translator", {}).get("key", "")
             
             self.config = DeepSeekConfig(
@@ -64,65 +72,73 @@ class Translator:
         if not text or not text.strip():
             return ""
 
+        # Lấy tên ngôn ngữ đầy đủ (ví dụ: 'vi' -> 'Vietnamese')
+        # Nếu không tìm thấy thì giữ nguyên mã
+        full_lang_name = CODE_TO_LANG_NAME.get(target_lang, target_lang)
+
         # Check cache
-        cache_key = f"{text}_{target_lang}"
+        cache_key = f"{text}_{full_lang_name}"
         if cache_key in self.translated_words:
             return self.translated_words[cache_key]
 
         if not self.client:
-            return "[Config Error]"
+            print("Error: OpenAI Client not initialized (Check API Key)")
+            return ""
 
         try:
-            # Tạo prompt cho DeepSeek
-            # System prompt định hướng hành vi dịch thuật chính xác
+            # Prompt được tối ưu hóa: Chỉ định rõ ngôn ngữ nguồn và đích bằng tên đầy đủ
             system_prompt = (
-                f"You are a professional translator. Translate the following Chinese text into {target_lang}. "
-                "Output ONLY the translated text, no explanations, no pinyin, no extra notes."
+                f"You are a professional translator. Translate the following Chinese text into {full_lang_name}. "
+                "Output ONLY the translated text. Do not include pinyin, notes, or explanations."
             )
 
+            # Gọi API
             response = self.client.chat.completions.create(
                 model=self.config.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text}
                 ],
-                temperature=0.3, # Giảm temperature để dịch chính xác hơn
+                temperature=0.1,  # Nhiệt độ thấp để dịch sát nghĩa, ít sáng tạo linh tinh
                 stream=False
             )
 
             translation = response.choices[0].message.content.strip()
             
-            # Update cache
+            # Kiểm tra nếu AI trả về chính text gốc (dịch thất bại)
+            if translation == text:
+                 print(f"Warning: DeepSeek returned original text for '{text}'")
+
             if translation:
                 self.translated_words[cache_key] = translation
+                # In ra console để debug xem nó dịch ra gì
+                # print(f"Translated: {text[:10]}... -> {translation[:10]}... ({full_lang_name})") 
                 return translation
             
             return ""
 
         except Exception as e:
-            print(f"DeepSeek Translation error: {str(e)}")
-            # Fallback hoặc return rỗng
+            # In lỗi chi tiết ra console/terminal để chị dễ debug
+            print(f"DeepSeek API Error for text '{text[:10]}...': {str(e)}")
             return ""
 
     def process_chinese_text(self, text: str, target_lang: str = "en") -> List[Dict[str, Any]]:
         """
         Process Chinese text for word-by-word translation.
-        Retains Jieba for consistent segmentation behavior with the UI.
         """
         try:
-            # Segment the text using jieba
             words = list(jieba.cut(text))
-            
             processed_words = []
             
+            # Chuyển đổi mã ngôn ngữ sang tên đầy đủ cho phần word-by-word
+            full_lang_name = CODE_TO_LANG_NAME.get(target_lang, target_lang)
+
             for i, word in enumerate(words):
-                # Skip processing for basic punctuation/numbers/whitespace to save tokens
                 is_meaningful = '\u4e00' <= word <= '\u9fff'
-                
                 word_pinyin = ""
                 translation = ""
                 
-                # 1. Get Pinyin (Local processing - Fast)
+                # 1. Pinyin
                 try:
                     if word.strip():
                         char_pinyins = [pinyin(char, style=Style.TONE)[0][0] for char in word]
@@ -130,13 +146,10 @@ class Translator:
                 except Exception:
                     pass
 
-                # 2. Get Translation (API Call)
+                # 2. Translation
                 if is_meaningful:
-                    # Check cache first inside translate_text
-                    translation = self.translate_text(word, target_lang)
+                    translation = self.translate_text(word, target_lang) # translate_text sẽ tự handle mapping ngôn ngữ
                 
-                # Construct result
-                # Using Pydantic model for internal validation then converting to dict for app compatibility
                 try:
                     word_obj = TranslationWord(
                         word=word,
@@ -145,7 +158,6 @@ class Translator:
                     )
                     processed_words.append(word_obj.model_dump())
                 except Exception as e:
-                    # Fallback for structure error
                     processed_words.append({
                         'word': word,
                         'pinyin': '',
