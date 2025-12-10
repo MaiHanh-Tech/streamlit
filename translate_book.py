@@ -14,27 +14,34 @@ import streamlit as st
 
 def split_sentence(text: str) -> List[str]:
     """Split text into sentences or meaningful chunks"""
+    print("Debug: Starting sentence split")  # 添加调试信息
+
     # Remove extra whitespace
-    text = re.re.sub(r'\s+', ' ', text.strip())
+    text = re.sub(r'\s+', ' ', text.strip())
 
-    # Segmentation logic (Giữ nguyên)
+    # 更复杂的分割模式，考虑引号和标点的组合
     pattern = r'([。！？，：；.!?,][」"』\'）)]*(?:\s*[「""『\'（(]*)?)'
-    splits = re.re.split(pattern, text)
+    splits = re.split(pattern, text)
 
+    print(f"Debug: Initial splits: {len(splits)}")  # 添加调试信息
+
+    # 合并短句和处理引号
     chunks = []
     current_chunk = ""
     min_length = 20
-    quote_count = 0 
+    quote_count = 0  # 跟踪引号状态
 
     for i in range(0, len(splits)-1, 2):
         if splits[i]:
             chunk = splits[i] + (splits[i+1] if i+1 < len(splits) else '')
 
+            # 计算当前块中的引号数量
             quote_count += chunk.count('"') + \
                 chunk.count('"') + chunk.count('"')
             quote_count += chunk.count('「') + chunk.count('」')
             quote_count += chunk.count('『') + chunk.count('』')
 
+            # 如果在引号内或当前块太短，继续累积
             if quote_count % 2 == 1 or (len(current_chunk) + len(chunk) < min_length and i < len(splits)-2):
                 current_chunk += chunk
             else:
@@ -43,8 +50,9 @@ def split_sentence(text: str) -> List[str]:
                     current_chunk = ""
                 else:
                     chunks.append(chunk)
-                quote_count = 0 
+                quote_count = 0  # 重置引号计数
 
+    # 处理最后剩余的文本
     if splits[-1] or current_chunk:
         last_chunk = splits[-1] if splits[-1] else ""
         if current_chunk:
@@ -52,32 +60,40 @@ def split_sentence(text: str) -> List[str]:
         elif last_chunk:
             chunks.append(last_chunk)
 
+    # 清理并返回结果
     return [chunk.strip() for chunk in chunks if chunk.strip()]
 
 
 def convert_to_pinyin(text: str, style: str = 'tone_marks') -> str:
-    """Convert Chinese text to pinyin with specified style"""
+    """
+    Convert Chinese text to pinyin with specified style
+    style: 'tone_marks' (default) or 'tone_numbers'
+    """
     try:
+        # Select pinyin style based on parameter
         if style == 'tone_numbers':
             pinyin_style = pypinyin.TONE3
-        else:
+        else:  # default to tone marks
             pinyin_style = pypinyin.TONE
 
+        # Convert to pinyin with selected style
         pinyin_list = pypinyin.pinyin(text, style=pinyin_style)
+        # Flatten the list and join with spaces
         return ' '.join([item[0] for item in pinyin_list])
     except Exception as e:
+        print(f"Error converting to pinyin: {e}")
         return "[Pinyin Error]"
 
 
-def translate_text(text, target_lang, include_english):
-    """Translate text using Translator class (Gemini)"""
+def translate_text(text, target_lang):
+    """Translate text using Azure Translator"""
     if 'translator' not in st.session_state:
         from translator import Translator
         st.session_state.translator = Translator()
     
     try:
-        # Gọi hàm translate_text mới trong translator.py
-        translation = st.session_state.translator.translate_text(text, target_lang, include_english)
+        translation = st.session_state.translator.translate_text(text, target_lang)
+        # print(f"Azure translated '{text}' to '{translation}'")  # Commented out for debugging
         return translation
     except Exception as e:
         print(f"Translation error: {str(e)}")
@@ -86,35 +102,21 @@ def translate_text(text, target_lang, include_english):
 
 def process_chunk(chunk: str, index: int, executor: ThreadPoolExecutor, include_english: bool, second_language: str, pinyin_style: str = 'tone_marks') -> tuple:
     try:
-        # Get pinyin
+        # Get pinyin with specified style
         pinyin = convert_to_pinyin(chunk, pinyin_style)
 
-        # Get translations (Gemini trả về cả cục)
-        full_translation = translate_text(chunk, second_language, include_english)
-        
-        # Tách dòng để lấy English và Ngôn ngữ đích
-        parts = [p.strip() for p in full_translation.split('\n') if p.strip()]
-        
+        # Get translations using Azure
         translations = []
-        if include_english and second_language != 'en':
-            # Giả định Gemini trả về: Dòng 1 = Ngôn ngữ đích, Dòng 2 = English
-            if len(parts) >= 2:
-                english = parts[1] 
-                second_trans = parts[0]
-            elif len(parts) == 1:
-                second_trans = parts[0]
-                english = "[Missing Eng]"
-            else:
-                english = "..."
-                second_trans = "..."
-                
-            translations.append(english)
-            translations.append(second_trans)
-            
-        else:
-            # Chỉ 1 ngôn ngữ
-            second_trans = parts[0] if len(parts) > 0 else "..."
-            translations.append(second_trans)
+        if include_english:
+            english = translate_text(chunk, 'en')
+            if english:
+                # print(f"English translation: {english}")  # Commented out for debugging
+                translations.append(english or "[Translation Error]")
+
+        second_trans = translate_text(chunk, second_language)
+        if second_trans:
+            # print(f"Second language translation: {second_trans}")  # Commented out for debugging
+            translations.append(second_trans or "[Translation Error]")
 
         return (index, chunk, pinyin, *translations)
 
@@ -125,7 +127,6 @@ def process_chunk(chunk: str, index: int, executor: ThreadPoolExecutor, include_
 
 
 def create_html_block(results: tuple, include_english: bool) -> str:
-    # Logic tạo HTML block (Giữ nguyên)
     speak_button = '''
         <button class="speak-button" onclick="speakSentence(this.parentElement.textContent.replace('🔊', ''))">
             <svg viewBox="0 0 24 24">
@@ -157,7 +158,6 @@ def create_html_block(results: tuple, include_english: bool) -> str:
 
 def process_text(file_path, include_english=True, second_language="vi", pinyin_style='tone_marks'):
     """Process text with language options and pinyin style"""
-    # (Giữ nguyên logic cũ)
     print("\nCounting total chunks...")
     with open(file_path, 'r', encoding='utf-8') as file:
         total_chunks = sum(len(split_sentence(line.strip()))
@@ -227,6 +227,7 @@ def process_text(file_path, include_english=True, second_language="vi", pinyin_s
             translation_content += '<div class="translation-block">'
             current_line = line_idx
 
+        # Pass include_english to create_html_block
         translation_content += create_html_block(result, include_english)
 
     if all_results:
@@ -238,12 +239,13 @@ def process_text(file_path, include_english=True, second_language="vi", pinyin_s
 
 def process_interactive_chunk(chunk: str, index: int, executor: ThreadPoolExecutor, include_english: bool, second_language: str, pinyin_style: str = 'tone_marks') -> tuple:
     """Process chunk for interactive word-by-word translation"""
-    # (Giữ nguyên logic cũ)
     try:
+        # 使用 translator 处理文本
         if 'translator' not in st.session_state:
             from translator import Translator
             st.session_state.translator = Translator()
         
+        # 直接使用 translator 的处理结果
         processed_words = st.session_state.translator.process_chinese_text(chunk, second_language)
         if not processed_words:
             return (index, chunk, [])
@@ -256,13 +258,16 @@ def process_interactive_chunk(chunk: str, index: int, executor: ThreadPoolExecut
 
 def create_interactive_html_block(results: tuple, include_english: bool) -> str:
     """Create HTML for interactive word-by-word translation"""
-    # (Giữ nguyên logic cũ)
     chunk, word_data = results
     
+    # 初始化HTML内容
     content_html = '<div class="interactive-text">'
+    
+    # 跟踪当前段落
     current_paragraph = []
     paragraphs = []
     
+    # 按段落分组词语
     for word in word_data:
         if word.get('word') == '\n':
             if current_paragraph:
@@ -274,6 +279,7 @@ def create_interactive_html_block(results: tuple, include_english: bool) -> str:
     if current_paragraph:
         paragraphs.append(current_paragraph)
     
+    # 生成每个段落的HTML
     for paragraph in paragraphs:
         content_html += '<p class="interactive-paragraph">'
         for word_data in paragraph:
@@ -296,7 +302,6 @@ def translate_file(input_text: str, progress_callback=None, include_english=True
                   second_language="vi", pinyin_style='tone_marks', 
                   translation_mode="Standard Translation", processed_words=None):
     """Translate text with progress updates"""
-    # (Giữ nguyên logic cũ)
     try:
         text = input_text.strip()
         
@@ -304,61 +309,51 @@ def translate_file(input_text: str, progress_callback=None, include_english=True
             with open('template.html', 'r', encoding='utf-8') as template_file:
                 html_content = template_file.read()
             
-            if progress_callback: progress_callback(0)
+            if progress_callback:
+                progress_callback(0)
             
+            # 先创建内容
             translation_content = create_interactive_html_block(
                 (text, processed_words),
                 include_english
             )
             
-            if progress_callback: progress_callback(100)
+            if progress_callback:
+                progress_callback(100)
+                
             return html_content.replace('{{content}}', translation_content)
         else:
-            # Standard Mode
+            # 保持标准翻译模式的代码完全不变
             chunks = split_sentence(text)
             total_chunks = len(chunks)
             chunks_processed = 0
+
             translation_content = ""
             
-            if progress_callback: progress_callback(0)
+            if progress_callback:
+                progress_callback(0)
+                print(f"Total chunks: {total_chunks}")
 
-            max_workers = 5
-            all_results = []
-            
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for index, chunk in enumerate(chunks):
-                    future = executor.submit(
-                        process_chunk,
-                        chunk,
-                        global_index,
-                        executor,
-                        include_english,
-                        second_language,
-                        pinyin_style
-                    )
-                    futures.append((index, future))
-
-                for index, future in futures:
-                    try:
-                        result = future.result(timeout=60)
-                        all_results.append(result)
-                        chunks_processed += 1
-                        if progress_callback:
-                            current_progress = min(100, (chunks_processed / total_chunks) * 100)
-                            progress_callback(current_progress)
-                    except Exception as e:
-                        continue
-
-            all_results.sort(key=lambda x: x[0])
-            
-            for result in all_results:
+            for chunk in chunks:
+                result = process_chunk(
+                    chunk, chunks_processed, None, 
+                    include_english, second_language, pinyin_style
+                )
+                
                 translation_content += create_html_block(result, include_english)
+                
+                chunks_processed += 1
+                if progress_callback:
+                    current_progress = min(100, (chunks_processed / total_chunks) * 100)
+                    print(f"Processing chunk {chunks_processed}/{total_chunks} ({current_progress:.1f}%)")
+                    progress_callback(current_progress)
 
             with open('template.html', 'r', encoding='utf-8') as template_file:
                 html_content = template_file.read()
                 
-            if progress_callback: progress_callback(100)
+            if progress_callback:
+                progress_callback(100)
+                
             return html_content.replace('{{content}}', translation_content)
 
     except Exception as e:
