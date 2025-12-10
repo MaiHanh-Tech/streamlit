@@ -1,15 +1,28 @@
-import google.generativeai as genai
 import streamlit as st
-import json
-import time
 import jieba
-import re
-from pypinyin import pinyin, Style 
-from google.api_core.exceptions import ResourceExhausted
+import time
+from pypinyin import pinyin, Style
+from openai import OpenAI
+from pydantic import BaseModel, Field, SecretStr
+from typing import Optional, List, Dict, Any
+
+# --- Pydantic Models for Configuration & Data ---
+
+class DeepSeekConfig(BaseModel):
+    api_key: SecretStr
+    base_url: str = Field(default="https://api.deepseek.com")
+    model: str = Field(default="deepseek-chat")
+
+class TranslationWord(BaseModel):
+    word: str
+    pinyin: str
+    translations: List[str]
+
+# --- Translator Class ---
 
 class Translator:
     _instance = None
-
+    
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -18,110 +31,129 @@ class Translator:
 
     def __init__(self):
         if not self.initialized:
-            try:
-                api_key = st.secrets["api_keys"]["gemini_api_key"]
-                genai.configure(api_key=api_key)
-                
-                # Cấu hình Model
-                try:
-                    self.model = genai.GenerativeModel('gemini-1.5-flash')
-                except:
-                    self.model = genai.GenerativeModel('gemini-pro')
-                        
-            except Exception as e:
-                self.model = None
-            
-            self.translated_words = {} 
+            self._init_config()
+            self.translated_words: Dict[str, str] = {}
             self.initialized = True
 
-    def _run_gemini(self, prompt):
-        if not self.model: return None
-        
-        # Tắt bộ lọc an toàn (để dịch văn bản chính trị)
-        safety = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-        
-        for i in range(3):
-            try:
-                response = self.model.generate_content(prompt, safety_settings=safety)
-                text = response.text.strip()
-                return text
-            except ResourceExhausted: 
-                time.sleep(2)
-            except Exception:
-                time.sleep(1)
-        return None
-
-    def translate_text(self, text, target_lang, include_english):
-        """Dịch đoạn văn Tiếng Trung (Vẫn dùng JSON/Text để không mất cấu trúc)"""
-        cache_key = f"{text}_{target_lang}_{include_english}"
-        if cache_key in self.translated_words: return self.translated_words[cache_key]
-        
-        # Tạo Prompt đơn giản để tránh lỗi
-        prompt = f"""
-        Translate this Chinese text to {target_lang}.
-        Input: "{text}"
-        """
-        
-        if include_english and target_lang != 'en':
-            prompt += f"""
-            Output JSON format: 
-            {{ 
-                "target": "Translation in {target_lang}", 
-                "english": "Translation in English" 
-            }}
-            """
-        else:
-            prompt += f"""
-            Output ONLY the translation in {target_lang}.
-            """
+    def _init_config(self):
+        """Initialize DeepSeek configuration using Pydantic"""
+        try:
+            # Lấy config từ secrets.toml
+            secrets = st.secrets.get("deepseek", {})
             
-        data = self._run_gemini(prompt)
-        
-        # Xử lý kết quả trả về
-        if data:
-            try:
-                # Cố gắng đọc JSON
-                json_data = json.loads(data)
-                if include_english and target_lang != 'en':
-                    res = f"{json_data.get('target', '')}\n{json_data.get('english', '')}"
-                else:
-                    res = json_data.get('target', '')
+            # Fallback cho trường hợp người dùng cũ vẫn để tên key là azure_translator nhưng muốn dùng deepseek
+            # Hoặc tạo config mới
+            api_key = secrets.get("api_key") or st.secrets.get("azure_translator", {}).get("key", "")
+            
+            self.config = DeepSeekConfig(
+                api_key=api_key,
+                base_url=secrets.get("base_url", "https://api.deepseek.com"),
+                model=secrets.get("model", "deepseek-chat")
+            )
+            
+            self.client = OpenAI(
+                api_key=self.config.api_key.get_secret_value(),
+                base_url=self.config.base_url
+            )
+        except Exception as e:
+            print(f"Configuration Error: {str(e)}")
+            self.client = None
+
+    def translate_text(self, text: str, target_lang: str) -> str:
+        """Translate text using DeepSeek API"""
+        if not text or not text.strip():
+            return ""
+
+        # Check cache
+        cache_key = f"{text}_{target_lang}"
+        if cache_key in self.translated_words:
+            return self.translated_words[cache_key]
+
+        if not self.client:
+            return "[Config Error]"
+
+        try:
+            # Tạo prompt cho DeepSeek
+            # System prompt định hướng hành vi dịch thuật chính xác
+            system_prompt = (
+                f"You are a professional translator. Translate the following Chinese text into {target_lang}. "
+                "Output ONLY the translated text, no explanations, no pinyin, no extra notes."
+            )
+
+            response = self.client.chat.completions.create(
+                model=self.config.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text}
+                ],
+                temperature=0.3, # Giảm temperature để dịch chính xác hơn
+                stream=False
+            )
+
+            translation = response.choices[0].message.content.strip()
+            
+            # Update cache
+            if translation:
+                self.translated_words[cache_key] = translation
+                return translation
+            
+            return ""
+
+        except Exception as e:
+            print(f"DeepSeek Translation error: {str(e)}")
+            # Fallback hoặc return rỗng
+            return ""
+
+    def process_chinese_text(self, text: str, target_lang: str = "en") -> List[Dict[str, Any]]:
+        """
+        Process Chinese text for word-by-word translation.
+        Retains Jieba for consistent segmentation behavior with the UI.
+        """
+        try:
+            # Segment the text using jieba
+            words = list(jieba.cut(text))
+            
+            processed_words = []
+            
+            for i, word in enumerate(words):
+                # Skip processing for basic punctuation/numbers/whitespace to save tokens
+                is_meaningful = '\u4e00' <= word <= '\u9fff'
                 
-                self.translated_words[cache_key] = res
-                return res
-            except Exception:
-                # FALLBACK: Nếu lỗi JSON, trả về nguyên văn bản dịch thô (Không bị Error)
-                self.translated_words[cache_key] = data
-                return data
+                word_pinyin = ""
+                translation = ""
+                
+                # 1. Get Pinyin (Local processing - Fast)
+                try:
+                    if word.strip():
+                        char_pinyins = [pinyin(char, style=Style.TONE)[0][0] for char in word]
+                        word_pinyin = ' '.join(char_pinyins)
+                except Exception:
+                    pass
+
+                # 2. Get Translation (API Call)
+                if is_meaningful:
+                    # Check cache first inside translate_text
+                    translation = self.translate_text(word, target_lang)
+                
+                # Construct result
+                # Using Pydantic model for internal validation then converting to dict for app compatibility
+                try:
+                    word_obj = TranslationWord(
+                        word=word,
+                        pinyin=word_pinyin if is_meaningful else "",
+                        translations=[translation] if translation else []
+                    )
+                    processed_words.append(word_obj.model_dump())
+                except Exception as e:
+                    # Fallback for structure error
+                    processed_words.append({
+                        'word': word,
+                        'pinyin': '',
+                        'translations': []
+                    })
             
-        return "[Error translating]"
-
-    def process_chinese_text(self, word, target_lang):
-        """Phân tích từ vựng (Interactive)"""
-        pinyin_text = ""
-        try:
-            pinyin_list = pinyin(word, style=Style.TONE)[0][0]
-            pinyin_text = ' '.join(pinyin_list)
-        except: pass
-        
-        prompt = f"""
-        Analyze Chinese word: "{word}". Target: {target_lang}.
-        Output JSON: [{{ "word": "{word}", "translations": ["Meaning 1"] }}]
-        """
-        
-        res = self._run_gemini(prompt)
-        try:
-            data = json.loads(res)
-            return [{
-                'word': word,
-                'pinyin': pinyin_text,
-                'translations': data[0].get('translations', [])
-            }]
-        except:
-            return [{'word': word, 'pinyin': pinyin_text, 'translations': ['...']}]
-
+            return processed_words
+            
+        except Exception as e:
+            print(f"Error processing text: {str(e)}")
+            return []
